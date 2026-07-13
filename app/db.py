@@ -51,7 +51,7 @@ def add_attachment(conn: sqlite3.Connection, program_id: int, file_name: str, co
     media_type = "image" if ext in (".jpg", ".jpeg", ".png") else "document"
     program_dir = os.path.join(MEDIA_DIR, str(program_id))
     os.makedirs(program_dir, exist_ok=True)
-    stored_name = f"{uuid.uuid4().hex}-{file_name}"
+    stored_name = f"{uuid.uuid4().hex}-{os.path.basename(file_name)}"
     file_path = os.path.join(program_dir, stored_name)
     with open(file_path, "wb") as f:
         f.write(content)
