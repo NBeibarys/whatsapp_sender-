@@ -30,3 +30,16 @@ rows = conn.execute(
 for row in rows:
     st.write(f"**{row[1]}** (id {row[0]}) — {'paused' if row[3] else 'active'}")
     st.code(row[2])
+    counts = conn.execute(
+        "SELECT status, COUNT(*) FROM contacts WHERE program_id = ? GROUP BY status",
+        (row[0],),
+    ).fetchall()
+    counts_dict = dict(counts)
+    total = sum(counts_dict.values())
+    if total:
+        st.caption(
+            f"{total} contact(s) — "
+            + " | ".join(f"{status}: {count}" for status, count in counts_dict.items())
+        )
+    else:
+        st.caption("No contacts yet")

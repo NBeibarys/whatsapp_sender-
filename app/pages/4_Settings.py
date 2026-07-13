@@ -6,9 +6,13 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st
-from app.db import get_connection
+from app.db import get_connection, create_program, insert_contacts
+from app.csv_import import parse_contacts_rows
 
 st.title("Settings")
+
+TEST_PROGRAM_NAME = "Test"
+TEST_PROGRAM_TEMPLATE = "Hi {{name}}, this is a test message from the Silkroad WhatsApp Sender."
 
 conn = get_connection("data/silkroad.db")
 
@@ -46,3 +50,40 @@ with st.form("settings_form"):
         conn.commit()
         st.success("Settings saved.")
         st.rerun()
+
+st.divider()
+st.subheader("Send a test message")
+st.caption(
+    "Quickly queue a one-off message to verify the pipeline end-to-end, without "
+    "hand-writing a script. This reuses (or creates) a dedicated 'Test' program with a "
+    "simple default template, and queues one contact as pending — the worker picks it "
+    "up on its next poll, same as any other contact."
+)
+
+with st.form("test_message_form"):
+    test_phone = st.text_input("Phone (with country code, e.g. +77012345678)")
+    test_name = st.text_input("Name", value="there")
+    test_submitted = st.form_submit_button("Queue test message")
+
+    if test_submitted:
+        valid, invalid = parse_contacts_rows([{"phone": test_phone, "name": test_name or "there"}])
+        if invalid:
+            st.error(invalid[0]["error"])
+        else:
+            existing = conn.execute(
+                "SELECT id FROM programs WHERE name = ?", (TEST_PROGRAM_NAME,)
+            ).fetchone()
+            test_program_id = existing[0] if existing else create_program(
+                conn, TEST_PROGRAM_NAME, TEST_PROGRAM_TEMPLATE
+            )
+            inserted, duplicates = insert_contacts(conn, test_program_id, valid)
+            if inserted:
+                st.success(
+                    f"Queued a test message to {valid[0]['phone']} in the '{TEST_PROGRAM_NAME}' "
+                    "program. Check the Status page to watch it get picked up."
+                )
+            if duplicates:
+                st.warning(
+                    f"{duplicates[0]} is already queued in the '{TEST_PROGRAM_NAME}' program "
+                    "— use the Status page to retry it if needed, or use a different number."
+                )

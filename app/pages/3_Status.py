@@ -1,6 +1,7 @@
 import base64
 import os
 import sys
+from datetime import datetime, timezone
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _PROJECT_ROOT not in sys.path:
@@ -9,12 +10,36 @@ if _PROJECT_ROOT not in sys.path:
 import streamlit as st
 from app.db import get_connection
 
+STALE_AFTER_SECONDS = 120
+
 st.title("Campaign Status")
 
 conn = get_connection("data/silkroad.db")
 
 heartbeat = conn.execute("SELECT last_seen FROM worker_heartbeat WHERE id = 1").fetchone()
-st.caption(f"Worker last seen: {heartbeat[0] if heartbeat and heartbeat[0] else 'never'}")
+last_seen = heartbeat[0] if heartbeat else None
+
+if not last_seen:
+    st.error(
+        "Worker has never checked in. Start it with `pm2 restart silkroad-whatsapp-worker` "
+        "or `node worker/index.js`."
+    )
+else:
+    try:
+        last_seen_dt = datetime.fromisoformat(last_seen.replace("Z", "+00:00"))
+        age_seconds = (datetime.now(timezone.utc) - last_seen_dt).total_seconds()
+    except ValueError:
+        age_seconds = None
+
+    if age_seconds is None:
+        st.caption(f"Worker last seen: {last_seen}")
+    elif age_seconds > STALE_AFTER_SECONDS:
+        st.error(
+            f"Worker may not be running — last seen {int(age_seconds)}s ago. "
+            "Start it with `pm2 restart silkroad-whatsapp-worker` or `node worker/index.js`."
+        )
+    else:
+        st.success(f"Worker running — last seen {int(age_seconds)}s ago.")
 
 qr_row = conn.execute("SELECT qr_code FROM worker_heartbeat WHERE id = 1").fetchone()
 if qr_row and qr_row[0]:
@@ -35,7 +60,10 @@ for program_id, name, paused in programs:
         (program_id,),
     ).fetchall()
     counts_dict = dict(counts)
-    st.write(counts_dict)
+    st.caption(
+        " | ".join(f"{status}: {count}" for status, count in counts_dict.items())
+        or "No contacts yet"
+    )
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -77,3 +105,31 @@ for program_id, name, paused in programs:
                 )
                 conn.commit()
                 st.rerun()
+
+    all_contacts = conn.execute(
+        "SELECT phone, name, status, sent_at, error_message FROM contacts "
+        "WHERE program_id = ? ORDER BY status, id",
+        (program_id,),
+    ).fetchall()
+
+    if not all_contacts:
+        st.info("No contacts yet — add some on the Upload Contacts page.")
+    else:
+        status_filter = st.multiselect(
+            "Filter by status",
+            options=["pending", "sending", "sent", "failed", "needs_review"],
+            default=[],
+            key=f"status-filter-{program_id}",
+        )
+        rows_to_show = [
+            {
+                "phone": c[0],
+                "name": c[1],
+                "status": c[2],
+                "sent_at": c[3],
+                "error_message": c[4],
+            }
+            for c in all_contacts
+            if not status_filter or c[2] in status_filter
+        ]
+        st.dataframe(rows_to_show, use_container_width=True, hide_index=True)
