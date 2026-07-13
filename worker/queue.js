@@ -28,4 +28,28 @@ function recoverStuckSends(db) {
   return result.changes;
 }
 
-module.exports = { getSettings, markSending, markSent, markFailed, recoverStuckSends };
+function getNextPendingContact(db) {
+  return db
+    .prepare(
+      `
+    SELECT c.* FROM contacts c
+    JOIN programs p ON p.id = c.program_id
+    WHERE c.status = 'pending' AND p.paused = 0
+    ORDER BY
+      (SELECT MAX(sent_at) FROM contacts c2 WHERE c2.program_id = c.program_id AND c2.status = 'sent') IS NULL DESC,
+      (SELECT MAX(sent_at) FROM contacts c2 WHERE c2.program_id = c.program_id AND c2.status = 'sent') ASC,
+      c.id ASC
+    LIMIT 1
+  `
+    )
+    .get();
+}
+
+module.exports = {
+  getSettings,
+  markSending,
+  markSent,
+  markFailed,
+  recoverStuckSends,
+  getNextPendingContact,
+};

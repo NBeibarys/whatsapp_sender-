@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { makeTestDb } = require('./helpers');
-const { getSettings, markSending, markSent, markFailed } = require('../queue');
+const { getSettings, markSending, markSent, markFailed, getNextPendingContact } = require('../queue');
 
 test('getSettings returns default settings row', () => {
   const { db, cleanup } = makeTestDb();
@@ -100,5 +100,77 @@ test('recoverStuckSends leaves other statuses untouched', () => {
   const row = db.prepare("SELECT status FROM contacts WHERE phone = '+10000000002'").get();
   assert.equal(changed, 0);
   assert.equal(row.status, 'pending');
+  cleanup();
+});
+
+test('getNextPendingContact prioritizes programs that have not sent yet', () => {
+  const { db, cleanup } = makeTestDb();
+  const progA = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const progB = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('B', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000001', 'SentA', 'sent', '2026-01-01T00:00:00.000Z')"
+  ).run(progA);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000002', 'PendingA', 'pending')"
+  ).run(progA);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000003', 'PendingB', 'pending')"
+  ).run(progB);
+
+  const next = getNextPendingContact(db);
+  assert.equal(next.program_id, progB, 'program that has never sent should go first');
+  cleanup();
+});
+
+test('getNextPendingContact picks the least-recently-served program next', () => {
+  const { db, cleanup } = makeTestDb();
+  const progA = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const progB = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('B', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000001', 'SentA', 'sent', '2026-01-01T00:00:00.000Z')"
+  ).run(progA);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000002', 'SentB', 'sent', '2026-01-02T00:00:00.000Z')"
+  ).run(progB);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000003', 'PendingA', 'pending')"
+  ).run(progA);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000004', 'PendingB', 'pending')"
+  ).run(progB);
+
+  const next = getNextPendingContact(db);
+  assert.equal(next.program_id, progA, 'A sent least recently (2026-01-01) so goes before B (2026-01-02)');
+  cleanup();
+});
+
+test('getNextPendingContact ignores paused programs', () => {
+  const { db, cleanup } = makeTestDb();
+  const progA = db
+    .prepare("INSERT INTO programs (name, template_text, paused) VALUES ('A', 'Hi {{name}}', 1)")
+    .run().lastInsertRowid;
+  const progB = db
+    .prepare("INSERT INTO programs (name, template_text, paused) VALUES ('B', 'Hi {{name}}', 0)")
+    .run().lastInsertRowid;
+
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000001', 'PendingA', 'pending')"
+  ).run(progA);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000002', 'PendingB', 'pending')"
+  ).run(progB);
+
+  const next = getNextPendingContact(db);
+  assert.equal(next.program_id, progB, 'paused program A should be skipped');
   cleanup();
 });
