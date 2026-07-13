@@ -3,7 +3,7 @@ const path = require('node:path');
 require('node:dns').setDefaultResultOrder('ipv4first');
 const { openDb } = require('./db');
 const { renderTemplate } = require('./template');
-const { updateHeartbeat } = require('./heartbeat');
+const { updateHeartbeat, isDisconnectRequested, clearDisconnectRequest, markDisconnected } = require('./heartbeat');
 const {
   getSettings,
   markSending,
@@ -13,7 +13,7 @@ const {
   getNextPendingContact,
   countSentToday,
 } = require('./queue');
-const { connect, checkOnWhatsApp, sendMessage } = require('./baileys');
+const { connect, registerReplyListener, checkOnWhatsApp, sendMessage } = require('./baileys');
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'silkroad.db');
 const AUTH_DIR = path.join(__dirname, '..', 'auth');
@@ -56,6 +56,23 @@ async function runLoop(db, sock) {
 
   while (true) {
     updateHeartbeat(db);
+
+    if (isDisconnectRequested(db)) {
+      clearDisconnectRequest(db);
+      if (sock) {
+        console.log('Disconnect requested from the app — logging out of WhatsApp.');
+        markDisconnected(db);
+        try {
+          await sock.logout();
+        } catch (err) {
+          console.error('Error during logout:', err.message);
+        }
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        console.log('Disconnected. Restarting to generate a fresh QR code.');
+        process.exit(0);
+      }
+    }
+
     const settings = getSettings(db);
 
     if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
@@ -82,8 +99,13 @@ async function main() {
   const db = openDb(DB_PATH);
   db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
 
+  updateHeartbeat(db);
+
   const settings = getSettings(db);
   const sock = settings.dry_run ? null : await connect(AUTH_DIR, db);
+  if (sock) {
+    registerReplyListener(sock, db);
+  }
 
   await runLoop(db, sock);
 }
