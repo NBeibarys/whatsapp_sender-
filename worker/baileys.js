@@ -80,7 +80,11 @@ function registerReplyListener(sock, db) {
       const remoteJid = msg.key.remoteJid || '';
       if (!remoteJid.endsWith('@s.whatsapp.net')) continue;
       const phone = `+${remoteJid.replace('@s.whatsapp.net', '')}`;
-      markReplied(db, phone);
+      try {
+        markReplied(db, phone);
+      } catch (err) {
+        console.error('Failed to record reply from', phone, err.message);
+      }
     }
   });
 }
