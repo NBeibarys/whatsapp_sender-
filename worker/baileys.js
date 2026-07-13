@@ -99,4 +99,13 @@ async function sendMessage(sock, phone, text) {
   await sock.sendMessage(jid, { text });
 }
 
-module.exports = { connect, registerReplyListener, checkOnWhatsApp, sendMessage };
+async function sendMediaMessage(sock, phone, attachment, caption) {
+  const jid = `${phone.replace('+', '')}@s.whatsapp.net`;
+  const content =
+    attachment.media_type === 'image'
+      ? { image: { url: attachment.file_path }, caption }
+      : { document: { url: attachment.file_path }, fileName: attachment.file_name, caption };
+  await sock.sendMessage(jid, content);
+}
+
+module.exports = { connect, registerReplyListener, checkOnWhatsApp, sendMessage, sendMediaMessage };

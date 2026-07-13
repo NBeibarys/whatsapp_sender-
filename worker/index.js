@@ -12,8 +12,9 @@ const {
   recoverStuckSends,
   getNextPendingContact,
   countSentToday,
+  getAttachments,
 } = require('./queue');
-const { connect, registerReplyListener, checkOnWhatsApp, sendMessage } = require('./baileys');
+const { connect, registerReplyListener, checkOnWhatsApp, sendMessage, sendMediaMessage } = require('./baileys');
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'silkroad.db');
 const AUTH_DIR = path.join(__dirname, '..', 'auth');
@@ -29,18 +30,29 @@ async function processContact(db, sock, contact, settings) {
   const program = db
     .prepare('SELECT template_text FROM programs WHERE id = ?')
     .get(contact.program_id);
+  const attachments = getAttachments(db, contact.program_id);
 
   try {
     const message = renderTemplate(program.template_text, { name: contact.name, ...extraFields });
 
     if (settings.dry_run) {
-      console.log(`[DRY RUN] Would send to ${contact.phone}: ${message}`);
+      const attachmentNote = attachments.length
+        ? ` [with attachments: ${attachments.map((a) => a.file_name).join(', ')}]`
+        : '';
+      console.log(`[DRY RUN] Would send to ${contact.phone}: ${message}${attachmentNote}`);
     } else {
       const exists = await checkOnWhatsApp(sock, contact.phone);
       if (!exists) {
         throw new Error('Number not registered on WhatsApp');
       }
-      await sendMessage(sock, contact.phone, message);
+      if (attachments.length === 0) {
+        await sendMessage(sock, contact.phone, message);
+      } else {
+        await sendMediaMessage(sock, contact.phone, attachments[0], message);
+        for (const attachment of attachments.slice(1)) {
+          await sendMediaMessage(sock, contact.phone, attachment, undefined);
+        }
+      }
     }
     markSent(db, contact.id, message);
   } catch (err) {

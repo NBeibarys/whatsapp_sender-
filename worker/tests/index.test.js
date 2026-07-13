@@ -38,3 +38,31 @@ test('processContact marks contact as failed (not crashed) when template field i
   assert.match(row.error_message, /Missing template field: program/);
   cleanup();
 });
+
+test('processContact logs attachment filenames in dry_run mode when the program has attachments', async () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  db.prepare(
+    "INSERT INTO program_attachments (program_id, file_path, file_name, media_type) VALUES (?, 'media/1/a.png', 'a.png', 'image')"
+  ).run(programId);
+  const contactId = db
+    .prepare("INSERT INTO contacts (program_id, phone, name, extra_fields) VALUES (?, '+10000000003', 'Test', '{}')")
+    .run(programId).lastInsertRowid;
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId);
+
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (msg) => logs.push(msg);
+
+  await processContact(db, null, contact, { dry_run: 1, delay_seconds: 60, jitter_seconds: 0 });
+
+  console.log = originalLog;
+
+  assert.ok(
+    logs.some((line) => line.includes('a.png')),
+    `expected a log line mentioning a.png, got: ${logs.join(' | ')}`
+  );
+  cleanup();
+});
