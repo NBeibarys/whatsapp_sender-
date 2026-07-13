@@ -142,12 +142,17 @@ test('getNextPendingContact picks the least-recently-served program next', () =>
   db.prepare(
     "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000002', 'SentB', 'sent', '2026-01-02T00:00:00.000Z')"
   ).run(progB);
-  db.prepare(
-    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000003', 'PendingA', 'pending')"
-  ).run(progA);
+  // Insert PendingB before PendingA so that B's contact row gets the smaller
+  // id and A's gets the larger id. This makes the test discriminate a
+  // correct sent_at-based implementation from a naive `ORDER BY c.id ASC`
+  // fallback: an id-only implementation would (wrongly) pick B here, while
+  // the correct round-robin logic picks A (least-recently-served).
   db.prepare(
     "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000004', 'PendingB', 'pending')"
   ).run(progB);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000003', 'PendingA', 'pending')"
+  ).run(progA);
 
   const next = getNextPendingContact(db);
   assert.equal(next.program_id, progA, 'A sent least recently (2026-01-01) so goes before B (2026-01-02)');
