@@ -245,3 +245,37 @@ test('markReplied ignores phones with no matching sent contact', () => {
   assert.equal(changed, 0);
   cleanup();
 });
+
+const { getAttachments } = require('../queue');
+
+test('getAttachments returns attachments for a program ordered by id', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  db.prepare(
+    "INSERT INTO program_attachments (program_id, file_path, file_name, media_type) VALUES (?, 'media/1/a.png', 'a.png', 'image')"
+  ).run(programId);
+  db.prepare(
+    "INSERT INTO program_attachments (program_id, file_path, file_name, media_type) VALUES (?, 'media/1/b.pdf', 'b.pdf', 'document')"
+  ).run(programId);
+
+  const attachments = getAttachments(db, programId);
+
+  assert.equal(attachments.length, 2);
+  assert.equal(attachments[0].file_name, 'a.png');
+  assert.equal(attachments[1].file_name, 'b.pdf');
+  cleanup();
+});
+
+test('getAttachments returns an empty array for a program with none', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+
+  const attachments = getAttachments(db, programId);
+
+  assert.deepEqual(attachments, []);
+  cleanup();
+});

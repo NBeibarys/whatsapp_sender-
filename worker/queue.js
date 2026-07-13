@@ -61,6 +61,12 @@ function markReplied(db, phone) {
   return result.changes;
 }
 
+function getAttachments(db, programId) {
+  return db
+    .prepare('SELECT * FROM program_attachments WHERE program_id = ? ORDER BY id ASC')
+    .all(programId);
+}
+
 module.exports = {
   getSettings,
   markSending,
@@ -70,4 +76,5 @@ module.exports = {
   getNextPendingContact,
   countSentToday,
   markReplied,
+  getAttachments,
 };
