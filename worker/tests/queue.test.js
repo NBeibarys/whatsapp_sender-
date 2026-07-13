@@ -200,3 +200,48 @@ test('getNextPendingContact ignores paused programs', () => {
   assert.equal(next.program_id, progB, 'paused program A should be skipped');
   cleanup();
 });
+
+const { markReplied } = require('../queue');
+
+test('markReplied stamps replied_at on a matching sent contact', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const contactId = db
+    .prepare(
+      "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000001', 'Test', 'sent')"
+    )
+    .run(programId).lastInsertRowid;
+
+  const changed = markReplied(db, '+10000000001');
+
+  const row = db.prepare('SELECT replied_at FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(changed, 1);
+  assert.ok(row.replied_at);
+  cleanup();
+});
+
+test('markReplied does not overwrite an existing replied_at', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, replied_at) VALUES (?, '+10000000002', 'Test2', 'sent', '2026-01-01T00:00:00.000Z')"
+  ).run(programId);
+
+  const changed = markReplied(db, '+10000000002');
+
+  const row = db.prepare("SELECT replied_at FROM contacts WHERE phone = '+10000000002'").get();
+  assert.equal(changed, 0);
+  assert.equal(row.replied_at, '2026-01-01T00:00:00.000Z');
+  cleanup();
+});
+
+test('markReplied ignores phones with no matching sent contact', () => {
+  const { db, cleanup } = makeTestDb();
+  const changed = markReplied(db, '+19999999999');
+  assert.equal(changed, 0);
+  cleanup();
+});

@@ -52,6 +52,15 @@ function countSentToday(db) {
   return row.count;
 }
 
+function markReplied(db, phone) {
+  const result = db
+    .prepare(
+      "UPDATE contacts SET replied_at = ? WHERE phone = ? AND status = 'sent' AND replied_at IS NULL"
+    )
+    .run(new Date().toISOString(), phone);
+  return result.changes;
+}
+
 module.exports = {
   getSettings,
   markSending,
@@ -60,4 +69,5 @@ module.exports = {
   recoverStuckSends,
   getNextPendingContact,
   countSentToday,
+  markReplied,
 };
