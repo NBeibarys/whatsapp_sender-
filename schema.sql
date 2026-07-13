@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   name TEXT NOT NULL,
   extra_fields TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'pending'
-    CHECK(status IN ('pending','sending','sent','failed','needs_review','skipped')),
+    CHECK(status IN ('pending','sending','sent','failed','needs_review')),
   rendered_message TEXT,
   sent_at TEXT,
   error_message TEXT,

@@ -11,8 +11,9 @@ row = conn.execute(
 delay_seconds, jitter_seconds, daily_cap, dry_run = row
 
 st.caption(
-    "These apply to the next polling cycle of the worker (it re-reads settings each loop) — "
-    "no restart needed."
+    "Delay, jitter, and daily cap apply on the next polling cycle — no restart needed. "
+    "Turning dry run OFF (to start actually sending) requires restarting the worker "
+    "process (e.g. `pm2 restart silkroad-whatsapp-worker`) so it can connect to WhatsApp."
 )
 
 with st.form("settings_form"):

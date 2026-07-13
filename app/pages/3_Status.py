@@ -20,7 +20,7 @@ for program_id, name, paused in programs:
     counts_dict = dict(counts)
     st.write(counts_dict)
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if paused:
             if st.button(f"Resume {name}", key=f"resume-{program_id}"):
@@ -42,3 +42,21 @@ for program_id, name, paused in programs:
             )
             conn.commit()
             st.rerun()
+    with col3:
+        needs_review_count = counts_dict.get("needs_review", 0)
+        if needs_review_count:
+            st.write(f"{needs_review_count} need review")
+            if st.button(f"Mark reviewed as sent", key=f"resolve-sent-{program_id}"):
+                conn.execute(
+                    "UPDATE contacts SET status = 'sent' WHERE program_id = ? AND status = 'needs_review'",
+                    (program_id,),
+                )
+                conn.commit()
+                st.rerun()
+            if st.button(f"Mark reviewed as pending", key=f"resolve-pending-{program_id}"):
+                conn.execute(
+                    "UPDATE contacts SET status = 'pending', error_message = NULL WHERE program_id = ? AND status = 'needs_review'",
+                    (program_id,),
+                )
+                conn.commit()
+                st.rerun()
