@@ -84,3 +84,8 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> None:
         conn.execute("DELETE FROM program_attachments WHERE id = ?", (attachment_id,))
     if os.path.exists(file_path):
         os.remove(file_path)
+
+
+def delete_contact(conn: sqlite3.Connection, contact_id: int) -> None:
+    with conn:
+        conn.execute("DELETE FROM contacts WHERE id = ? AND status = 'pending'", (contact_id,))

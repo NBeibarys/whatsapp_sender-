@@ -1,7 +1,7 @@
 import os
 import tempfile
 import pytest
-from app.db import get_connection, create_program, insert_contacts, add_attachment, list_attachments, delete_attachment
+from app.db import get_connection, create_program, insert_contacts, add_attachment, list_attachments, delete_attachment, delete_contact
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "schema.sql")
 
@@ -88,3 +88,33 @@ def test_delete_attachment_removes_row_and_file(conn, tmp_path, monkeypatch):
 
     assert list_attachments(conn, program_id) == []
     assert not os.path.exists(file_path)
+
+
+def test_delete_contact_removes_pending_contact(conn):
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+    valid = [{"phone": "+77012345678", "name": "Aigerim", "extra_fields": {}}]
+    insert_contacts(conn, program_id, valid)
+    contact_id = conn.execute(
+        "SELECT id FROM contacts WHERE program_id = ?", (program_id,)
+    ).fetchone()[0]
+
+    delete_contact(conn, contact_id)
+
+    row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
+    assert row is None
+
+
+def test_delete_contact_does_not_delete_a_sent_contact(conn):
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+    valid = [{"phone": "+77012345678", "name": "Aigerim", "extra_fields": {}}]
+    insert_contacts(conn, program_id, valid)
+    contact_id = conn.execute(
+        "SELECT id FROM contacts WHERE program_id = ?", (program_id,)
+    ).fetchone()[0]
+    conn.execute("UPDATE contacts SET status = 'sent' WHERE id = ?", (contact_id,))
+    conn.commit()
+
+    delete_contact(conn, contact_id)
+
+    row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
+    assert row is not None
