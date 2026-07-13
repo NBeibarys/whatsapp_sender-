@@ -21,4 +21,11 @@ function markFailed(db, contactId, errorMessage) {
   );
 }
 
-module.exports = { getSettings, markSending, markSent, markFailed };
+function recoverStuckSends(db) {
+  const result = db
+    .prepare("UPDATE contacts SET status = 'needs_review' WHERE status = 'sending'")
+    .run();
+  return result.changes;
+}
+
+module.exports = { getSettings, markSending, markSent, markFailed, recoverStuckSends };

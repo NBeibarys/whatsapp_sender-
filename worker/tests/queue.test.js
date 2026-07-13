@@ -64,3 +64,41 @@ test('markFailed sets status and error_message', () => {
   assert.equal(row.error_message, 'Number not registered on WhatsApp');
   cleanup();
 });
+
+const { recoverStuckSends } = require('../queue');
+
+test('recoverStuckSends marks sending rows as needs_review', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const contactId = db
+    .prepare(
+      "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000001', 'Test', 'sending')"
+    )
+    .run(programId).lastInsertRowid;
+
+  const changed = recoverStuckSends(db);
+
+  const row = db.prepare('SELECT status FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(changed, 1);
+  assert.equal(row.status, 'needs_review');
+  cleanup();
+});
+
+test('recoverStuckSends leaves other statuses untouched', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status) VALUES (?, '+10000000002', 'Test2', 'pending')"
+  ).run(programId);
+
+  const changed = recoverStuckSends(db);
+
+  const row = db.prepare("SELECT status FROM contacts WHERE phone = '+10000000002'").get();
+  assert.equal(changed, 0);
+  assert.equal(row.status, 'pending');
+  cleanup();
+});
