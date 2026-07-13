@@ -9,16 +9,37 @@ async function connect(authDir) {
   const sock = makeWASocket({ auth: state, printQRInTerminal: true });
   sock.ev.on('creds.update', saveCreds);
 
+  let initialConnectionResolved = false;
+
   return new Promise((resolve, reject) => {
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect } = update;
+
       if (connection === 'open') {
+        initialConnectionResolved = true;
         resolve(sock);
-      } else if (connection === 'close') {
+        return;
+      }
+
+      if (connection === 'close') {
         const shouldReconnect =
           lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+
+        if (!initialConnectionResolved) {
+          if (!shouldReconnect) {
+            reject(new Error('WhatsApp session logged out. Delete auth/ and re-scan QR.'));
+          }
+          return;
+        }
+
         if (!shouldReconnect) {
-          reject(new Error('WhatsApp session logged out. Delete auth/ and re-scan QR.'));
+          console.error(
+            'WhatsApp session was logged out after a successful connection. ' +
+              'The worker will now exit; pm2 will restart it, which will require ' +
+              'a fresh QR scan (delete the auth/ directory and re-run to get a new QR code, ' +
+              'or check pm2 logs for the QR code on the next restart attempt).'
+          );
+          process.exit(1);
         }
       }
     });
