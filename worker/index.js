@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+require('node:dns').setDefaultResultOrder('ipv4first');
 const { openDb } = require('./db');
 const { renderTemplate } = require('./template');
 const { updateHeartbeat } = require('./heartbeat');
@@ -82,7 +83,7 @@ async function main() {
   db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
 
   const settings = getSettings(db);
-  const sock = settings.dry_run ? null : await connect(AUTH_DIR);
+  const sock = settings.dry_run ? null : await connect(AUTH_DIR, db);
 
   await runLoop(db, sock);
 }

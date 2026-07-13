@@ -1,22 +1,37 @@
 const {
   default: makeWASocket,
   useMultiFileAuthState,
+  fetchLatestBaileysVersion,
   DisconnectReason,
 } = require('@whiskeysockets/baileys');
+const qrcodeTerminal = require('qrcode-terminal');
+const QRCode = require('qrcode');
+const { setQrCode, clearQrCode } = require('./heartbeat');
 
-async function connect(authDir) {
+async function connect(authDir, db) {
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
-  const sock = makeWASocket({ auth: state, printQRInTerminal: true });
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log(`Using WhatsApp Web protocol version ${version.join('.')}, isLatest: ${isLatest}`);
+  const sock = makeWASocket({ auth: state, version });
   sock.ev.on('creds.update', saveCreds);
 
   let initialConnectionResolved = false;
 
   return new Promise((resolve, reject) => {
     sock.ev.on('connection.update', (update) => {
-      const { connection, lastDisconnect } = update;
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        console.log('Scan this QR code with WhatsApp (Linked Devices):');
+        qrcodeTerminal.generate(qr, { small: true });
+        QRCode.toDataURL(qr)
+          .then((dataUrl) => setQrCode(db, dataUrl))
+          .catch((err) => console.error('Failed to render QR code for the app UI:', err.message));
+      }
 
       if (connection === 'open') {
         initialConnectionResolved = true;
+        clearQrCode(db);
         resolve(sock);
         return;
       }

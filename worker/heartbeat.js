@@ -9,4 +9,17 @@ function getHeartbeat(db) {
   return row ? row.last_seen : null;
 }
 
-module.exports = { updateHeartbeat, getHeartbeat };
+function setQrCode(db, dataUrl) {
+  db.prepare('UPDATE worker_heartbeat SET qr_code = ? WHERE id = 1').run(dataUrl);
+}
+
+function clearQrCode(db) {
+  db.prepare('UPDATE worker_heartbeat SET qr_code = NULL WHERE id = 1').run();
+}
+
+function getQrCode(db) {
+  const row = db.prepare('SELECT qr_code FROM worker_heartbeat WHERE id = 1').get();
+  return row ? row.qr_code : null;
+}
+
+module.exports = { updateHeartbeat, getHeartbeat, setQrCode, clearQrCode, getQrCode };

@@ -34,6 +34,7 @@ INSERT OR IGNORE INTO settings (id, delay_seconds, jitter_seconds, daily_cap, dr
 
 CREATE TABLE IF NOT EXISTS worker_heartbeat (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  last_seen TEXT
+  last_seen TEXT,
+  qr_code TEXT
 );
 INSERT OR IGNORE INTO worker_heartbeat (id, last_seen) VALUES (1, NULL);
