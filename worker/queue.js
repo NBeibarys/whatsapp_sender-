@@ -45,6 +45,13 @@ function getNextPendingContact(db) {
     .get();
 }
 
+function countSentToday(db) {
+  const row = db
+    .prepare("SELECT COUNT(*) AS count FROM contacts WHERE status = 'sent' AND date(sent_at) = date('now')")
+    .get();
+  return row.count;
+}
+
 module.exports = {
   getSettings,
   markSending,
@@ -52,4 +59,5 @@ module.exports = {
   markFailed,
   recoverStuckSends,
   getNextPendingContact,
+  countSentToday,
 };

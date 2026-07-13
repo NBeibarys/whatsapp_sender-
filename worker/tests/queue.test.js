@@ -159,6 +159,27 @@ test('getNextPendingContact picks the least-recently-served program next', () =>
   cleanup();
 });
 
+const { countSentToday } = require('../queue');
+
+test('countSentToday counts only contacts sent today', () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000001', 'Today1', 'sent', datetime('now'))"
+  ).run(programId);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000002', 'Today2', 'sent', datetime('now'))"
+  ).run(programId);
+  db.prepare(
+    "INSERT INTO contacts (program_id, phone, name, status, sent_at) VALUES (?, '+10000000003', 'Yesterday', 'sent', datetime('now', '-1 day'))"
+  ).run(programId);
+
+  assert.equal(countSentToday(db), 2);
+  cleanup();
+});
+
 test('getNextPendingContact ignores paused programs', () => {
   const { db, cleanup } = makeTestDb();
   const progA = db

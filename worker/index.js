@@ -10,6 +10,7 @@ const {
   markFailed,
   recoverStuckSends,
   getNextPendingContact,
+  countSentToday,
 } = require('./queue');
 const { connect, checkOnWhatsApp, sendMessage } = require('./baileys');
 
@@ -21,6 +22,31 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function processContact(db, sock, contact, settings) {
+  markSending(db, contact.id);
+  const extraFields = JSON.parse(contact.extra_fields || '{}');
+  const program = db
+    .prepare('SELECT template_text FROM programs WHERE id = ?')
+    .get(contact.program_id);
+
+  try {
+    const message = renderTemplate(program.template_text, { name: contact.name, ...extraFields });
+
+    if (settings.dry_run) {
+      console.log(`[DRY RUN] Would send to ${contact.phone}: ${message}`);
+    } else {
+      const exists = await checkOnWhatsApp(sock, contact.phone);
+      if (!exists) {
+        throw new Error('Number not registered on WhatsApp');
+      }
+      await sendMessage(sock, contact.phone, message);
+    }
+    markSent(db, contact.id, message);
+  } catch (err) {
+    markFailed(db, contact.id, err.message);
+  }
+}
+
 async function runLoop(db, sock) {
   const recovered = recoverStuckSends(db);
   if (recovered > 0) {
@@ -30,6 +56,12 @@ async function runLoop(db, sock) {
   while (true) {
     updateHeartbeat(db);
     const settings = getSettings(db);
+
+    if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
+      await sleep(5000);
+      continue;
+    }
+
     const contact = getNextPendingContact(db);
 
     if (!contact) {
@@ -37,27 +69,7 @@ async function runLoop(db, sock) {
       continue;
     }
 
-    markSending(db, contact.id);
-    const extraFields = JSON.parse(contact.extra_fields || '{}');
-    const program = db
-      .prepare('SELECT template_text FROM programs WHERE id = ?')
-      .get(contact.program_id);
-    const message = renderTemplate(program.template_text, { name: contact.name, ...extraFields });
-
-    try {
-      if (settings.dry_run) {
-        console.log(`[DRY RUN] Would send to ${contact.phone}: ${message}`);
-      } else {
-        const exists = await checkOnWhatsApp(sock, contact.phone);
-        if (!exists) {
-          throw new Error('Number not registered on WhatsApp');
-        }
-        await sendMessage(sock, contact.phone, message);
-      }
-      markSent(db, contact.id, message);
-    } catch (err) {
-      markFailed(db, contact.id, err.message);
-    }
+    await processContact(db, sock, contact, settings);
 
     const jitter = settings.jitter_seconds > 0 ? Math.random() * settings.jitter_seconds : 0;
     await sleep((settings.delay_seconds + jitter) * 1000);
@@ -75,7 +87,11 @@ async function main() {
   await runLoop(db, sock);
 }
 
-main().catch((err) => {
-  console.error('Worker crashed:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Worker crashed:', err);
+    process.exit(1);
+  });
+}
+
+module.exports = { processContact };
