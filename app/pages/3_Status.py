@@ -1,3 +1,11 @@
+import base64
+import os
+import sys
+
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import streamlit as st
 from app.db import get_connection
 
@@ -7,6 +15,15 @@ conn = get_connection("data/silkroad.db")
 
 heartbeat = conn.execute("SELECT last_seen FROM worker_heartbeat WHERE id = 1").fetchone()
 st.caption(f"Worker last seen: {heartbeat[0] if heartbeat and heartbeat[0] else 'never'}")
+
+qr_row = conn.execute("SELECT qr_code FROM worker_heartbeat WHERE id = 1").fetchone()
+if qr_row and qr_row[0]:
+    st.subheader("Scan this QR code to connect WhatsApp")
+    _, b64data = qr_row[0].split(",", 1)
+    st.image(base64.b64decode(b64data), width=300)
+    st.caption("WhatsApp app -> Settings -> Linked Devices -> Link a Device")
+    if st.button("Refresh"):
+        st.rerun()
 
 programs = conn.execute("SELECT id, name, paused FROM programs ORDER BY name").fetchall()
 
