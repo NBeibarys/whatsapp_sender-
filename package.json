@@ -1,0 +1,14 @@
+{
+  "name": "silkroad-whatsapp-sender",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "node --test worker/tests/",
+    "worker": "node worker/index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "better-sqlite3": "^11.3.0",
+    "pino": "^9.4.0"
+  }
+}
