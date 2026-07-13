@@ -4,4 +4,21 @@ function getSettings(db) {
     .get();
 }
 
-module.exports = { getSettings };
+function markSending(db, contactId) {
+  db.prepare("UPDATE contacts SET status = 'sending' WHERE id = ?").run(contactId);
+}
+
+function markSent(db, contactId, renderedMessage) {
+  db.prepare(
+    "UPDATE contacts SET status = 'sent', rendered_message = ?, sent_at = ? WHERE id = ?"
+  ).run(renderedMessage, new Date().toISOString(), contactId);
+}
+
+function markFailed(db, contactId, errorMessage) {
+  db.prepare("UPDATE contacts SET status = 'failed', error_message = ? WHERE id = ?").run(
+    errorMessage,
+    contactId
+  );
+}
+
+module.exports = { getSettings, markSending, markSent, markFailed };
