@@ -1,5 +1,7 @@
 import json
+import os
 import sqlite3
+import uuid
 
 TEST_PROGRAM_NAME = "Test"
 
@@ -39,3 +41,46 @@ def insert_contacts(conn: sqlite3.Connection, program_id: int, valid_contacts: l
             except sqlite3.IntegrityError:
                 duplicates.append(c["phone"])
     return inserted, duplicates
+
+
+MEDIA_DIR = "media"
+
+
+def add_attachment(conn: sqlite3.Connection, program_id: int, file_name: str, content: bytes) -> int:
+    ext = os.path.splitext(file_name)[1].lower()
+    media_type = "image" if ext in (".jpg", ".jpeg", ".png") else "document"
+    program_dir = os.path.join(MEDIA_DIR, str(program_id))
+    os.makedirs(program_dir, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}-{file_name}"
+    file_path = os.path.join(program_dir, stored_name)
+    with open(file_path, "wb") as f:
+        f.write(content)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO program_attachments (program_id, file_path, file_name, media_type) "
+            "VALUES (?, ?, ?, ?)",
+            (program_id, file_path, file_name, media_type),
+        )
+        return cur.lastrowid
+
+
+def list_attachments(conn: sqlite3.Connection, program_id: int) -> list:
+    rows = conn.execute(
+        "SELECT id, file_path, file_name, media_type FROM program_attachments "
+        "WHERE program_id = ? ORDER BY id",
+        (program_id,),
+    ).fetchall()
+    return [{"id": r[0], "file_path": r[1], "file_name": r[2], "media_type": r[3]} for r in rows]
+
+
+def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> None:
+    row = conn.execute(
+        "SELECT file_path FROM program_attachments WHERE id = ?", (attachment_id,)
+    ).fetchone()
+    if row is None:
+        return
+    file_path = row[0]
+    with conn:
+        conn.execute("DELETE FROM program_attachments WHERE id = ?", (attachment_id,))
+    if os.path.exists(file_path):
+        os.remove(file_path)

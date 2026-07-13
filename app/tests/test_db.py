@@ -1,7 +1,7 @@
 import os
 import tempfile
 import pytest
-from app.db import get_connection, create_program, insert_contacts
+from app.db import get_connection, create_program, insert_contacts, add_attachment, list_attachments, delete_attachment
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "schema.sql")
 
@@ -52,3 +52,39 @@ def test_insert_contacts_flags_duplicates(conn):
 
     assert inserted == 0
     assert duplicates == ["+77012345678"]
+
+
+def test_add_attachment_saves_file_and_returns_id(conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+
+    attachment_id = add_attachment(conn, program_id, "flyer.png", b"fake-image-bytes")
+
+    assert isinstance(attachment_id, int)
+    attachments = list_attachments(conn, program_id)
+    assert len(attachments) == 1
+    assert attachments[0]["file_name"] == "flyer.png"
+    assert attachments[0]["media_type"] == "image"
+    assert os.path.exists(attachments[0]["file_path"])
+
+
+def test_add_attachment_classifies_non_image_as_document(conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+
+    add_attachment(conn, program_id, "brochure.pdf", b"fake-pdf-bytes")
+
+    attachments = list_attachments(conn, program_id)
+    assert attachments[0]["media_type"] == "document"
+
+
+def test_delete_attachment_removes_row_and_file(conn, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+    attachment_id = add_attachment(conn, program_id, "flyer.png", b"fake-image-bytes")
+    file_path = list_attachments(conn, program_id)[0]["file_path"]
+
+    delete_attachment(conn, attachment_id)
+
+    assert list_attachments(conn, program_id) == []
+    assert not os.path.exists(file_path)
