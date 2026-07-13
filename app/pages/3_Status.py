@@ -8,7 +8,7 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st
-from app.db import get_connection
+from app.db import get_connection, TEST_PROGRAM_NAME
 
 STALE_AFTER_SECONDS = 120
 
@@ -16,8 +16,12 @@ st.title("Campaign Status")
 
 conn = get_connection("data/silkroad.db")
 
-heartbeat = conn.execute("SELECT last_seen FROM worker_heartbeat WHERE id = 1").fetchone()
-last_seen = heartbeat[0] if heartbeat else None
+heartbeat = conn.execute(
+    "SELECT last_seen, qr_code, connected FROM worker_heartbeat WHERE id = 1"
+).fetchone()
+last_seen, qr_code, connected = heartbeat if heartbeat else (None, None, 0)
+
+worker_alive = False
 
 if not last_seen:
     st.error(
@@ -31,26 +35,45 @@ else:
     except ValueError:
         age_seconds = None
 
+    worker_alive = age_seconds is not None and age_seconds <= STALE_AFTER_SECONDS
+
     if age_seconds is None:
         st.caption(f"Worker last seen: {last_seen}")
-    elif age_seconds > STALE_AFTER_SECONDS:
+    elif not worker_alive:
         st.error(
             f"Worker may not be running — last seen {int(age_seconds)}s ago. "
             "Start it with `pm2 restart silkroad-whatsapp-worker` or `node worker/index.js`."
         )
+    elif connected:
+        st.success(f"WhatsApp connected — worker last seen {int(age_seconds)}s ago.")
     else:
-        st.success(f"Worker running — last seen {int(age_seconds)}s ago.")
+        st.warning(
+            f"WhatsApp not connected — worker last seen {int(age_seconds)}s ago. "
+            "Scan the QR code below to link a number."
+        )
 
-qr_row = conn.execute("SELECT qr_code FROM worker_heartbeat WHERE id = 1").fetchone()
-if qr_row and qr_row[0]:
+if worker_alive and connected:
+    if st.button("Disconnect WhatsApp"):
+        conn.execute("UPDATE worker_heartbeat SET disconnect_requested = 1 WHERE id = 1")
+        conn.commit()
+        st.info(
+            "Disconnect requested — the worker will log out and show a new QR code "
+            "in a few seconds."
+        )
+        st.rerun()
+
+if qr_code:
     st.subheader("Scan this QR code to connect WhatsApp")
-    _, b64data = qr_row[0].split(",", 1)
+    _, b64data = qr_code.split(",", 1)
     st.image(base64.b64decode(b64data), width=300)
     st.caption("WhatsApp app -> Settings -> Linked Devices -> Link a Device")
     if st.button("Refresh"):
         st.rerun()
 
-programs = conn.execute("SELECT id, name, paused FROM programs ORDER BY name").fetchall()
+programs = conn.execute(
+    "SELECT id, name, paused FROM programs WHERE name != ? ORDER BY name",
+    (TEST_PROGRAM_NAME,),
+).fetchall()
 
 for program_id, name, paused in programs:
     st.subheader(f"{name} {'(paused)' if paused else ''}")

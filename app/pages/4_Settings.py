@@ -6,12 +6,11 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st
-from app.db import get_connection, create_program, insert_contacts
+from app.db import get_connection, create_program, insert_contacts, TEST_PROGRAM_NAME
 from app.csv_import import parse_contacts_rows
 
 st.title("Settings")
 
-TEST_PROGRAM_NAME = "Test"
 TEST_PROGRAM_TEMPLATE = "Hi {{name}}, this is a test message from the Silkroad WhatsApp Sender."
 
 conn = get_connection("data/silkroad.db")
@@ -76,6 +75,8 @@ with st.form("test_message_form"):
             test_program_id = existing[0] if existing else create_program(
                 conn, TEST_PROGRAM_NAME, TEST_PROGRAM_TEMPLATE
             )
+            conn.execute("UPDATE programs SET paused = 0 WHERE id = ?", (test_program_id,))
+            conn.commit()
             inserted, duplicates = insert_contacts(conn, test_program_id, valid)
             if inserted:
                 st.success(

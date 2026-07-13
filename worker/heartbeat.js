@@ -22,4 +22,36 @@ function getQrCode(db) {
   return row ? row.qr_code : null;
 }
 
-module.exports = { updateHeartbeat, getHeartbeat, setQrCode, clearQrCode, getQrCode };
+function markConnected(db) {
+  db.prepare('UPDATE worker_heartbeat SET connected = 1 WHERE id = 1').run();
+}
+
+function markDisconnected(db) {
+  db.prepare('UPDATE worker_heartbeat SET connected = 0 WHERE id = 1').run();
+}
+
+function requestDisconnect(db) {
+  db.prepare('UPDATE worker_heartbeat SET disconnect_requested = 1 WHERE id = 1').run();
+}
+
+function isDisconnectRequested(db) {
+  const row = db.prepare('SELECT disconnect_requested FROM worker_heartbeat WHERE id = 1').get();
+  return Boolean(row && row.disconnect_requested);
+}
+
+function clearDisconnectRequest(db) {
+  db.prepare('UPDATE worker_heartbeat SET disconnect_requested = 0 WHERE id = 1').run();
+}
+
+module.exports = {
+  updateHeartbeat,
+  getHeartbeat,
+  setQrCode,
+  clearQrCode,
+  getQrCode,
+  markConnected,
+  markDisconnected,
+  requestDisconnect,
+  isDisconnectRequested,
+  clearDisconnectRequest,
+};
