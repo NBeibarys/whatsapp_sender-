@@ -39,3 +39,20 @@ else:
                 st.warning(
                     f"Skipped {len(duplicates)} duplicate(s) already in this program: {duplicates}"
                 )
+
+    st.subheader("Or add one contact manually")
+    with st.form("manual_contact"):
+        manual_phone = st.text_input("Phone (with country code, e.g. +77012345678)")
+        manual_name = st.text_input("Name")
+        manual_submitted = st.form_submit_button("Add contact")
+
+        if manual_submitted:
+            valid, invalid = parse_contacts_rows([{"phone": manual_phone, "name": manual_name}])
+            if invalid:
+                st.error(invalid[0]["error"])
+            else:
+                inserted, duplicates = insert_contacts(conn, program_choice[0], valid)
+                if inserted:
+                    st.success(f"Added {valid[0]['name']} ({valid[0]['phone']}) to the queue.")
+                if duplicates:
+                    st.warning(f"{duplicates[0]} is already in this program.")
