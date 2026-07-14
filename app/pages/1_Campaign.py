@@ -118,24 +118,28 @@ elif st.session_state.selected_program_id is not None:
     st.subheader(name)
 
     if paused:
-        if st.button("▶ Resume campaign"):
+        if st.button("▶ Resume campaign", key=f"resume-{program_id}"):
             conn.execute("UPDATE programs SET paused = 0 WHERE id = ?", (program_id,))
             conn.commit()
             st.rerun()
     else:
-        if st.button("⏸ Pause campaign"):
+        if st.button("⏸ Pause campaign", key=f"pause-{program_id}"):
             conn.execute("UPDATE programs SET paused = 1 WHERE id = ?", (program_id,))
             conn.commit()
             st.rerun()
 
     st.markdown("**Template**")
     st.caption("Placeholders: {{name}} plus any extra CSV columns for this campaign's contacts.")
-    new_template = st.text_area("Message text", value=template_text, key=f"template-{program_id}")
+    template_nonce = st.session_state.get(f"template-nonce-{program_id}", 0)
+    new_template = st.text_area(
+        "Message text", value=template_text, key=f"template-{program_id}-{template_nonce}"
+    )
     if st.button("Save template", key=f"save-template-{program_id}"):
         conn.execute(
             "UPDATE programs SET template_text = ? WHERE id = ?", (new_template, program_id)
         )
         conn.commit()
+        st.session_state[f"template-nonce-{program_id}"] = template_nonce + 1
         st.success("Template saved.")
         st.rerun()
 
@@ -157,6 +161,8 @@ elif st.session_state.selected_program_id is not None:
         st.rerun()
 
     attachments = list_attachments(conn, program_id)
+    if not attachments:
+        st.caption("No attachments yet.")
     for a in attachments:
         col1, col2 = st.columns([4, 1])
         with col1:
