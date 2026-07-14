@@ -60,11 +60,13 @@ async function processContact(db, sock, contact, settings) {
   }
 }
 
-async function runLoop(db, sock) {
+async function runLoop(db) {
   const recovered = recoverStuckSends(db);
   if (recovered > 0) {
     console.log(`Marked ${recovered} interrupted send(s) as needs_review.`);
   }
+
+  let sock = null;
 
   while (true) {
     updateHeartbeat(db);
@@ -86,6 +88,19 @@ async function runLoop(db, sock) {
     }
 
     const settings = getSettings(db);
+
+    if (!settings.dry_run && !sock) {
+      console.log('dry_run turned off — connecting to WhatsApp...');
+      try {
+        sock = await connect(AUTH_DIR, db);
+        registerReplyListener(sock, db);
+        console.log('Connected to WhatsApp.');
+      } catch (err) {
+        console.error('Failed to connect to WhatsApp:', err.message);
+        await sleep(5000);
+        continue;
+      }
+    }
 
     if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
       await sleep(5000);
@@ -113,13 +128,7 @@ async function main() {
 
   updateHeartbeat(db);
 
-  const settings = getSettings(db);
-  const sock = settings.dry_run ? null : await connect(AUTH_DIR, db);
-  if (sock) {
-    registerReplyListener(sock, db);
-  }
-
-  await runLoop(db, sock);
+  await runLoop(db);
 }
 
 if (require.main === module) {
