@@ -238,10 +238,15 @@ elif st.session_state.selected_program_id is not None:
     delay_seconds = conn.execute("SELECT delay_seconds FROM settings WHERE id = 1").fetchone()[0]
     pending_count = counts.get("pending", 0)
     eta_minutes = round(pending_count * delay_seconds / 60, 1)
+    show_eta = pending_count and not paused
     st.caption(
         " | ".join(f"{status}: {count}" for status, count in counts.items())
         + f" | replied: {replied_count}"
-        + (f" | ~{eta_minutes} min remaining (estimate)" if pending_count else "")
+        + (
+            f" | ~{eta_minutes} min remaining (estimate, assumes no other active campaigns)"
+            if show_eta
+            else ""
+        )
     )
 
     failed_count = counts.get("failed", 0)
