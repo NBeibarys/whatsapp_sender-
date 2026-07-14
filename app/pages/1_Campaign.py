@@ -6,7 +6,14 @@ if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
 import streamlit as st
-from app.db import get_connection, create_program, TEST_PROGRAM_NAME
+from app.db import (
+    get_connection,
+    create_program,
+    add_attachment,
+    list_attachments,
+    delete_attachment,
+    TEST_PROGRAM_NAME,
+)
 
 st.title("Campaign")
 
@@ -90,4 +97,63 @@ if st.session_state.creating_new_campaign:
                 st.session_state.selected_program_id = program_id
                 st.session_state.creating_new_campaign = False
                 st.success(f"Created campaign '{name}'.")
+                st.rerun()
+
+# --- Workspace for the selected campaign ---
+elif st.session_state.selected_program_id is not None:
+    program_id = st.session_state.selected_program_id
+    program = conn.execute(
+        "SELECT id, name, template_text, paused FROM programs WHERE id = ?", (program_id,)
+    ).fetchone()
+
+    if program is None:
+        st.session_state.selected_program_id = None
+        st.rerun()
+
+    _, name, template_text, paused = program
+    st.subheader(name)
+
+    if paused:
+        if st.button("▶ Resume campaign"):
+            conn.execute("UPDATE programs SET paused = 0 WHERE id = ?", (program_id,))
+            conn.commit()
+            st.rerun()
+    else:
+        if st.button("⏸ Pause campaign"):
+            conn.execute("UPDATE programs SET paused = 1 WHERE id = ?", (program_id,))
+            conn.commit()
+            st.rerun()
+
+    st.markdown("**Template**")
+    st.caption("Placeholders: {{name}} plus any extra CSV columns for this campaign's contacts.")
+    new_template = st.text_area("Message text", value=template_text, key=f"template-{program_id}")
+    if st.button("Save template", key=f"save-template-{program_id}"):
+        conn.execute(
+            "UPDATE programs SET template_text = ? WHERE id = ?", (new_template, program_id)
+        )
+        conn.commit()
+        st.success("Template saved.")
+        st.rerun()
+
+    st.markdown("**Attachments**")
+    uploaded_files = st.file_uploader(
+        "Add images or documents to send with every message",
+        type=["png", "jpg", "jpeg", "pdf", "doc", "docx"],
+        accept_multiple_files=True,
+        key=f"upload-{program_id}",
+    )
+    if uploaded_files and st.button("Save attachments", key=f"save-attachments-{program_id}"):
+        for f in uploaded_files:
+            add_attachment(conn, program_id, f.name, f.read())
+        st.success(f"Added {len(uploaded_files)} attachment(s).")
+        st.rerun()
+
+    attachments = list_attachments(conn, program_id)
+    for a in attachments:
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.write(f"{a['file_name']} ({a['media_type']})")
+        with col2:
+            if st.button("Remove", key=f"remove-attachment-{a['id']}"):
+                delete_attachment(conn, a["id"])
                 st.rerun()
