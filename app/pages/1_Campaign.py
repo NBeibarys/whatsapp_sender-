@@ -15,6 +15,7 @@ from app.db import (
     list_attachments,
     delete_attachment,
     insert_contacts,
+    delete_contact,
     TEST_PROGRAM_NAME,
 )
 from app.csv_import import parse_contacts_rows
@@ -222,3 +223,113 @@ elif st.session_state.selected_program_id is not None:
                         st.success(f"Added {valid[0]['name']} ({valid[0]['phone']}).")
                     if duplicates:
                         st.warning(f"{duplicates[0]} is already in this campaign.")
+
+    st.markdown("**Status**")
+    counts = dict(
+        conn.execute(
+            "SELECT status, COUNT(*) FROM contacts WHERE program_id = ? GROUP BY status",
+            (program_id,),
+        ).fetchall()
+    )
+    replied_count = conn.execute(
+        "SELECT COUNT(*) FROM contacts WHERE program_id = ? AND replied_at IS NOT NULL",
+        (program_id,),
+    ).fetchone()[0]
+    delay_seconds = conn.execute("SELECT delay_seconds FROM settings WHERE id = 1").fetchone()[0]
+    pending_count = counts.get("pending", 0)
+    eta_minutes = round(pending_count * delay_seconds / 60, 1)
+    st.caption(
+        " | ".join(f"{status}: {count}" for status, count in counts.items())
+        + f" | replied: {replied_count}"
+        + (f" | ~{eta_minutes} min remaining (estimate)" if pending_count else "")
+    )
+
+    failed_count = counts.get("failed", 0)
+    needs_review_count = counts.get("needs_review", 0)
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if failed_count and st.button(f"Retry all {failed_count} failed", key=f"retry-all-{program_id}"):
+            conn.execute(
+                "UPDATE contacts SET status = 'pending', error_message = NULL "
+                "WHERE program_id = ? AND status = 'failed'",
+                (program_id,),
+            )
+            conn.commit()
+            st.rerun()
+    with col2:
+        if needs_review_count and st.button(
+            "Mark needs_review as sent", key=f"resolve-sent-{program_id}"
+        ):
+            conn.execute(
+                "UPDATE contacts SET status = 'sent' WHERE program_id = ? AND status = 'needs_review'",
+                (program_id,),
+            )
+            conn.commit()
+            st.rerun()
+    with col3:
+        if needs_review_count and st.button(
+            "Mark needs_review as pending", key=f"resolve-pending-{program_id}"
+        ):
+            conn.execute(
+                "UPDATE contacts SET status = 'pending', error_message = NULL "
+                "WHERE program_id = ? AND status = 'needs_review'",
+                (program_id,),
+            )
+            conn.commit()
+            st.rerun()
+
+    all_contacts = conn.execute(
+        "SELECT id, phone, name, status, sent_at, replied_at, error_message FROM contacts "
+        "WHERE program_id = ? ORDER BY status, id",
+        (program_id,),
+    ).fetchall()
+
+    if not all_contacts:
+        st.info("No contacts yet — use Add contacts above.")
+    else:
+        status_filter = st.multiselect(
+            "Filter by status",
+            options=["pending", "sending", "sent", "failed", "needs_review"],
+            default=[],
+            key=f"status-filter-{program_id}",
+        )
+        rows_to_show = [
+            {
+                "id": c[0],
+                "Select": False,
+                "phone": c[1],
+                "name": c[2],
+                "status": c[3],
+                "sent_at": c[4],
+                "replied_at": c[5],
+                "error_message": c[6],
+            }
+            for c in all_contacts
+            if not status_filter or c[3] in status_filter
+        ]
+        edited_rows = st.data_editor(
+            rows_to_show,
+            hide_index=True,
+            column_order=["Select", "phone", "name", "status", "sent_at", "replied_at", "error_message"],
+            disabled=["phone", "name", "status", "sent_at", "replied_at", "error_message"],
+            key=f"contact-table-{program_id}",
+        )
+        selected_ids = [r["id"] for r in edited_rows if r["Select"]]
+
+        bcol1, bcol2 = st.columns(2)
+        with bcol1:
+            if selected_ids and st.button("Retry selected failed", key=f"retry-selected-{program_id}"):
+                for contact_id in selected_ids:
+                    conn.execute(
+                        "UPDATE contacts SET status = 'pending', error_message = NULL "
+                        "WHERE id = ? AND status = 'failed'",
+                        (contact_id,),
+                    )
+                conn.commit()
+                st.rerun()
+        with bcol2:
+            if selected_ids and st.button("Delete selected pending", key=f"delete-selected-{program_id}"):
+                for contact_id in selected_ids:
+                    delete_contact(conn, contact_id)
+                conn.commit()
+                st.rerun()
