@@ -35,6 +35,11 @@ last_seen, qr_code, connected, disconnect_requested = (
     heartbeat if heartbeat else (None, None, 0, 0)
 )
 
+if connected and qr_code:
+    conn.execute("UPDATE worker_heartbeat SET qr_code = NULL WHERE id = 1")
+    conn.commit()
+    qr_code = None
+
 if qr_code:
     st.session_state.waiting_for_connection_qr = False
 
@@ -97,7 +102,9 @@ if qr_code:
     _, b64data = qr_code.split(",", 1)
     st.image(base64.b64decode(b64data), width=300)
     st.caption("WhatsApp app -> Settings -> Linked Devices -> Link a Device")
-    if st.button("Refresh"):
+    if st.button("Refresh QR"):
+        if os.environ.get("SKIP_AUTO_WORKER") != "1":
+            ensure_worker_running()
         st.rerun()
 
 st.divider()

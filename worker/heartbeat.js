@@ -10,7 +10,7 @@ function getHeartbeat(db) {
 }
 
 function setQrCode(db, dataUrl) {
-  db.prepare('UPDATE worker_heartbeat SET qr_code = ? WHERE id = 1').run(dataUrl);
+  db.prepare('UPDATE worker_heartbeat SET qr_code = ?, connected = 0 WHERE id = 1').run(dataUrl);
 }
 
 function clearQrCode(db) {
@@ -23,7 +23,7 @@ function getQrCode(db) {
 }
 
 function markConnected(db) {
-  db.prepare('UPDATE worker_heartbeat SET connected = 1 WHERE id = 1').run();
+  db.prepare('UPDATE worker_heartbeat SET connected = 1, qr_code = NULL WHERE id = 1').run();
 }
 
 function markDisconnected(db) {

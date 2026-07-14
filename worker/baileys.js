@@ -28,7 +28,11 @@ async function connect(authDir, db) {
         qrcodeTerminal.generate(qr, { small: true });
         updateHeartbeat(db);
         QRCode.toDataURL(qr)
-          .then((dataUrl) => setQrCode(db, dataUrl))
+          .then((dataUrl) => {
+            if (!initialConnectionResolved) {
+              setQrCode(db, dataUrl);
+            }
+          })
           .catch((err) => console.error('Failed to render QR code for the app UI:', err.message));
       }
 
