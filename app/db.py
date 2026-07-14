@@ -150,3 +150,11 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> None:
 def delete_contact(conn: sqlite3.Connection, contact_id: int) -> None:
     with conn:
         conn.execute("DELETE FROM contacts WHERE id = ? AND status = 'pending'", (contact_id,))
+
+
+def delete_contact_from_table(conn: sqlite3.Connection, contact_id: int) -> bool:
+    with conn:
+        result = conn.execute(
+            "DELETE FROM contacts WHERE id = ? AND status != 'sending'", (contact_id,)
+        )
+    return result.rowcount > 0

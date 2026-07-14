@@ -11,6 +11,7 @@ from app.db import (
     list_attachments,
     delete_attachment,
     delete_contact,
+    delete_contact_from_table,
     save_settings,
 )
 
@@ -127,6 +128,40 @@ def test_delete_contact_does_not_delete_a_sent_contact(conn):
 
     delete_contact(conn, contact_id)
 
+    row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
+    assert row is not None
+
+
+def test_delete_contact_from_table_removes_sent_contact(conn):
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+    valid = [{"phone": "+77012345678", "name": "Aigerim", "extra_fields": {}}]
+    insert_contacts(conn, program_id, valid)
+    contact_id = conn.execute(
+        "SELECT id FROM contacts WHERE program_id = ?", (program_id,)
+    ).fetchone()[0]
+    conn.execute("UPDATE contacts SET status = 'sent' WHERE id = ?", (contact_id,))
+    conn.commit()
+
+    deleted = delete_contact_from_table(conn, contact_id)
+
+    assert deleted is True
+    row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
+    assert row is None
+
+
+def test_delete_contact_from_table_keeps_sending_contact(conn):
+    program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
+    valid = [{"phone": "+77012345678", "name": "Aigerim", "extra_fields": {}}]
+    insert_contacts(conn, program_id, valid)
+    contact_id = conn.execute(
+        "SELECT id FROM contacts WHERE program_id = ?", (program_id,)
+    ).fetchone()[0]
+    conn.execute("UPDATE contacts SET status = 'sending' WHERE id = ?", (contact_id,))
+    conn.commit()
+
+    deleted = delete_contact_from_table(conn, contact_id)
+
+    assert deleted is False
     row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
     assert row is not None
 
