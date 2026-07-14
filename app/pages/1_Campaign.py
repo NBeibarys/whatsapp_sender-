@@ -136,15 +136,19 @@ elif st.session_state.selected_program_id is not None:
         st.rerun()
 
     st.markdown("**Attachments**")
+    upload_key = f"upload-{program_id}-{st.session_state.get(f'upload-nonce-{program_id}', 0)}"
     uploaded_files = st.file_uploader(
         "Add images or documents to send with every message",
         type=["png", "jpg", "jpeg", "pdf", "doc", "docx"],
         accept_multiple_files=True,
-        key=f"upload-{program_id}",
+        key=upload_key,
     )
     if uploaded_files and st.button("Save attachments", key=f"save-attachments-{program_id}"):
         for f in uploaded_files:
             add_attachment(conn, program_id, f.name, f.read())
+        st.session_state[f"upload-nonce-{program_id}"] = (
+            st.session_state.get(f"upload-nonce-{program_id}", 0) + 1
+        )
         st.success(f"Added {len(uploaded_files)} attachment(s).")
         st.rerun()
 
