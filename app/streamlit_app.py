@@ -1,4 +1,4 @@
-import streamlit as st
+import os
+import runpy
 
-st.title("Silkroad WhatsApp Sender")
-st.write("Use the pages in the sidebar: Campaign, Connection, Settings.")
+runpy.run_path(os.path.join(os.path.dirname(__file__), "app.py"))
