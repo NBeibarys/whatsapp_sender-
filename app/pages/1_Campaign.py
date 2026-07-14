@@ -1,3 +1,5 @@
+import csv
+import io
 import os
 import sys
 
@@ -12,8 +14,10 @@ from app.db import (
     add_attachment,
     list_attachments,
     delete_attachment,
+    insert_contacts,
     TEST_PROGRAM_NAME,
 )
+from app.csv_import import parse_contacts_rows
 
 st.title("Campaign")
 
@@ -161,3 +165,48 @@ elif st.session_state.selected_program_id is not None:
             if st.button("Remove", key=f"remove-attachment-{a['id']}"):
                 delete_attachment(conn, a["id"])
                 st.rerun()
+
+    st.markdown("**Add contacts**")
+    tab_csv, tab_manual = st.tabs(["Import CSV", "Add one"])
+
+    with tab_csv:
+        uploaded_csv = st.file_uploader(
+            "Contacts CSV (columns: phone, name, plus any extra fields)",
+            type="csv",
+            key=f"csv-{program_id}",
+        )
+        if uploaded_csv is not None:
+            text = io.TextIOWrapper(uploaded_csv, encoding="utf-8")
+            rows = list(csv.DictReader(text))
+            valid, invalid = parse_contacts_rows(rows)
+
+            st.write(f"{len(valid)} valid row(s), {len(invalid)} invalid row(s)")
+            if valid:
+                st.caption("Preview (first 3): " + str(valid[:3]))
+            if invalid:
+                st.caption("Rejected: " + str(invalid))
+
+            if valid and st.button("Queue these contacts", key=f"queue-csv-{program_id}"):
+                inserted, duplicates = insert_contacts(conn, program_id, valid)
+                st.success(f"Queued {inserted} contact(s).")
+                if duplicates:
+                    st.warning(f"Skipped {len(duplicates)} duplicate(s): {duplicates}")
+                st.rerun()
+
+    with tab_manual:
+        with st.form(f"manual-contact-{program_id}"):
+            manual_phone = st.text_input("Phone (with country code, e.g. +77012345678)")
+            manual_name = st.text_input("Name")
+            manual_submitted = st.form_submit_button("Add contact")
+            if manual_submitted:
+                valid, invalid = parse_contacts_rows(
+                    [{"phone": manual_phone, "name": manual_name}]
+                )
+                if invalid:
+                    st.error(invalid[0]["error"])
+                else:
+                    inserted, duplicates = insert_contacts(conn, program_id, valid)
+                    if inserted:
+                        st.success(f"Added {valid[0]['name']} ({valid[0]['phone']}).")
+                    if duplicates:
+                        st.warning(f"{duplicates[0]} is already in this campaign.")
