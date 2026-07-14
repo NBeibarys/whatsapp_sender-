@@ -1,6 +1,7 @@
 import base64
 import os
 import sys
+import time
 from datetime import datetime, timezone
 
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,6 +11,7 @@ if _PROJECT_ROOT not in sys.path:
 import streamlit as st
 from app.db import get_connection, create_program, insert_contacts, TEST_PROGRAM_NAME
 from app.csv_import import parse_contacts_rows
+from app.worker_supervisor import WORKER_LOG_PATH, ensure_worker_running
 
 STALE_AFTER_SECONDS = 120
 TEST_PROGRAM_TEMPLATE = "Hi {{name}}, this is a test message from the Silkroad WhatsApp Sender."
@@ -18,10 +20,23 @@ st.title("Connection")
 
 conn = get_connection("data/silkroad.db")
 
+if os.environ.get("SKIP_AUTO_WORKER") != "1":
+    worker_ok, worker_message = ensure_worker_running()
+    if worker_ok:
+        st.caption(worker_message)
+    else:
+        st.error(worker_message)
+        st.caption(f"Worker log: {WORKER_LOG_PATH}")
+
 heartbeat = conn.execute(
-    "SELECT last_seen, qr_code, connected FROM worker_heartbeat WHERE id = 1"
+    "SELECT last_seen, qr_code, connected, disconnect_requested FROM worker_heartbeat WHERE id = 1"
 ).fetchone()
-last_seen, qr_code, connected = heartbeat if heartbeat else (None, None, 0)
+last_seen, qr_code, connected, disconnect_requested = (
+    heartbeat if heartbeat else (None, None, 0, 0)
+)
+
+if qr_code:
+    st.session_state.waiting_for_connection_qr = False
 
 worker_alive = False
 
@@ -56,13 +71,26 @@ else:
 
 if worker_alive and connected:
     if st.button("Disconnect WhatsApp"):
-        conn.execute("UPDATE worker_heartbeat SET disconnect_requested = 1 WHERE id = 1")
-        conn.commit()
-        st.info(
-            "Disconnect requested — the worker will log out and show a new QR code "
-            "in a few seconds."
+        conn.execute(
+            """
+            UPDATE worker_heartbeat
+            SET disconnect_requested = 1, connected = 0, qr_code = NULL
+            WHERE id = 1
+            """
         )
+        conn.commit()
+        st.session_state.waiting_for_connection_qr = True
+        if os.environ.get("SKIP_AUTO_WORKER") != "1":
+            ensure_worker_running()
         st.rerun()
+
+if st.session_state.get("waiting_for_connection_qr") or disconnect_requested:
+    if not qr_code:
+        st.info("Disconnecting WhatsApp and preparing a fresh QR code...")
+        if os.environ.get("SKIP_AUTO_WORKER") != "1":
+            ensure_worker_running()
+            time.sleep(2)
+            st.rerun()
 
 if qr_code:
     st.subheader("Scan this QR code to connect WhatsApp")
