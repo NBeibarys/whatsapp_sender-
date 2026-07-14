@@ -61,7 +61,7 @@ new_dry_run = st.checkbox(
 )
 new_delay = st.number_input(
     "Delay between sends (seconds)",
-    min_value=1,
+    min_value=0,
     value=delay_seconds,
     step=1,
     key="settings_delay_seconds_input",
