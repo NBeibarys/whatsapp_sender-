@@ -176,10 +176,11 @@ elif st.session_state.selected_program_id is not None:
     tab_csv, tab_manual = st.tabs(["Import CSV", "Add one"])
 
     with tab_csv:
+        csv_nonce = st.session_state.get(f"csv-nonce-{program_id}", 0)
         uploaded_csv = st.file_uploader(
             "Contacts CSV (columns: phone, name, plus any extra fields)",
             type="csv",
-            key=f"csv-{program_id}",
+            key=f"csv-{program_id}-{csv_nonce}",
         )
         if uploaded_csv is not None:
             text = io.TextIOWrapper(uploaded_csv, encoding="utf-8")
@@ -188,12 +189,17 @@ elif st.session_state.selected_program_id is not None:
 
             st.write(f"{len(valid)} valid row(s), {len(invalid)} invalid row(s)")
             if valid:
-                st.caption("Preview (first 3): " + str(valid[:3]))
+                st.caption("Preview (first 3):")
+                for v in valid[:3]:
+                    st.write(v)
             if invalid:
-                st.caption("Rejected: " + str(invalid))
+                st.caption("Rejected:")
+                for i in invalid:
+                    st.write(i["row"], "->", i["error"])
 
             if valid and st.button("Queue these contacts", key=f"queue-csv-{program_id}"):
                 inserted, duplicates = insert_contacts(conn, program_id, valid)
+                st.session_state[f"csv-nonce-{program_id}"] = csv_nonce + 1
                 st.success(f"Queued {inserted} contact(s).")
                 if duplicates:
                     st.warning(f"Skipped {len(duplicates)} duplicate(s): {duplicates}")
