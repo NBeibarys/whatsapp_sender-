@@ -1,7 +1,18 @@
 import os
 import tempfile
 import pytest
-from app.db import get_connection, create_program, insert_contacts, add_attachment, list_attachments, delete_attachment, delete_contact
+from app.db import (
+    APP_DB_PATH,
+    get_connection,
+    get_settings,
+    create_program,
+    insert_contacts,
+    add_attachment,
+    list_attachments,
+    delete_attachment,
+    delete_contact,
+    save_settings,
+)
 
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "schema.sql")
 
@@ -118,3 +129,59 @@ def test_delete_contact_does_not_delete_a_sent_contact(conn):
 
     row = conn.execute("SELECT id FROM contacts WHERE id = ?", (contact_id,)).fetchone()
     assert row is not None
+
+
+def test_app_db_path_is_repo_anchored_when_cwd_changes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    expected = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "data", "silkroad.db")
+    )
+
+    assert APP_DB_PATH == expected
+
+
+def test_save_settings_updates_singleton_row(conn):
+    save_settings(
+        conn,
+        dry_run=False,
+        delay_seconds=12,
+        jitter_seconds=3,
+        daily_cap=0,
+    )
+
+    row = conn.execute(
+        "SELECT delay_seconds, jitter_seconds, daily_cap, dry_run FROM settings WHERE id = 1"
+    ).fetchone()
+    assert row == (12, 3, None, 0)
+
+
+def test_save_settings_creates_missing_singleton_row(conn):
+    conn.execute("DELETE FROM settings WHERE id = 1")
+    conn.commit()
+
+    save_settings(
+        conn,
+        dry_run=True,
+        delay_seconds=20,
+        jitter_seconds=4,
+        daily_cap=50,
+    )
+
+    row = conn.execute(
+        "SELECT delay_seconds, jitter_seconds, daily_cap, dry_run FROM settings WHERE id = 1"
+    ).fetchone()
+    assert row == (20, 4, 50, 1)
+
+
+def test_get_settings_creates_default_row_when_missing(conn):
+    conn.execute("DELETE FROM settings WHERE id = 1")
+    conn.commit()
+
+    row = get_settings(conn)
+
+    assert row == (60, 0, None, 1)
+    saved = conn.execute(
+        "SELECT delay_seconds, jitter_seconds, daily_cap, dry_run FROM settings WHERE id = 1"
+    ).fetchone()
+    assert saved == row

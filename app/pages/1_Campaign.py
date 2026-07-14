@@ -7,6 +7,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import pandas as pd
 import streamlit as st
 from app.db import (
     get_connection,
@@ -19,6 +20,11 @@ from app.db import (
     TEST_PROGRAM_NAME,
 )
 from app.csv_import import parse_contacts_rows
+
+# pandas 3.x defaults string columns to an Arrow-backed dtype; on this system that
+# path segfaults inside pyarrow when st.data_editor builds the contact table
+# (verified via PYTHONFAULTHANDLER trace). Force the legacy object dtype instead.
+pd.set_option("future.infer_string", False)
 
 st.title("Campaign")
 
@@ -305,9 +311,9 @@ elif st.session_state.selected_program_id is not None:
                 "phone": c[1],
                 "name": c[2],
                 "status": c[3],
-                "sent_at": c[4],
-                "replied_at": c[5],
-                "error_message": c[6],
+                "sent_at": c[4] or "",
+                "replied_at": c[5] or "",
+                "error_message": c[6] or "",
             }
             for c in all_contacts
             if not status_filter or c[3] in status_filter

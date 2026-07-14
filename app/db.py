@@ -4,14 +4,75 @@ import sqlite3
 import uuid
 
 TEST_PROGRAM_NAME = "Test"
+APP_DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "silkroad.db",
+)
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
+    if db_path == os.path.join("data", "silkroad.db"):
+        db_path = APP_DB_PATH
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
     conn = sqlite3.connect(db_path, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def get_app_connection() -> sqlite3.Connection:
+    os.makedirs(os.path.dirname(APP_DB_PATH), exist_ok=True)
+    return get_connection(APP_DB_PATH)
+
+
+DEFAULT_DELAY_SECONDS = 60
+DEFAULT_JITTER_SECONDS = 0
+DEFAULT_DAILY_CAP = None
+DEFAULT_DRY_RUN = 1
+
+
+def save_settings(
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool,
+    delay_seconds: int,
+    jitter_seconds: int,
+    daily_cap: int | None,
+) -> None:
+    cap_value = daily_cap if daily_cap and daily_cap > 0 else None
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO settings (id, dry_run, delay_seconds, jitter_seconds, daily_cap)
+            VALUES (1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                dry_run = excluded.dry_run,
+                delay_seconds = excluded.delay_seconds,
+                jitter_seconds = excluded.jitter_seconds,
+                daily_cap = excluded.daily_cap
+            """,
+            (int(dry_run), delay_seconds, jitter_seconds, cap_value),
+        )
+
+
+def get_settings(conn: sqlite3.Connection) -> tuple[int, int, int | None, int]:
+    row = conn.execute(
+        "SELECT delay_seconds, jitter_seconds, daily_cap, dry_run FROM settings WHERE id = 1"
+    ).fetchone()
+    if row is not None:
+        return row
+
+    save_settings(
+        conn,
+        dry_run=bool(DEFAULT_DRY_RUN),
+        delay_seconds=DEFAULT_DELAY_SECONDS,
+        jitter_seconds=DEFAULT_JITTER_SECONDS,
+        daily_cap=DEFAULT_DAILY_CAP,
+    )
+    return (DEFAULT_DELAY_SECONDS, DEFAULT_JITTER_SECONDS, DEFAULT_DAILY_CAP, DEFAULT_DRY_RUN)
 
 
 def create_program(conn: sqlite3.Connection, name: str, template_text: str) -> int:
