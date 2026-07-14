@@ -54,6 +54,10 @@ conn = get_connection(DB_PATH)
 
 delay_seconds, jitter_seconds, daily_cap, dry_run = get_settings(conn)
 
+if "settings_form_nonce" not in st.session_state:
+    st.session_state.settings_form_nonce = 0
+settings_form_nonce = st.session_state.settings_form_nonce
+
 saved_settings = st.session_state.pop("settings_saved", None)
 if saved_settings is not None:
     saved_delay, saved_jitter, saved_cap, saved_dry_run = saved_settings
@@ -68,28 +72,28 @@ with st.form("settings_form"):
     new_dry_run = st.checkbox(
         "Dry run (log instead of actually sending)",
         value=bool(dry_run),
-        key="settings_dry_run",
+        key=f"settings_dry_run_{settings_form_nonce}",
     )
     new_delay = st.number_input(
         "Delay between sends (seconds)",
         min_value=1,
         value=delay_seconds,
         step=1,
-        key="settings_delay_seconds",
+        key=f"settings_delay_seconds_{settings_form_nonce}",
     )
     new_jitter = st.number_input(
         "Random jitter added to delay (seconds)",
         min_value=0,
         value=jitter_seconds,
         step=1,
-        key="settings_jitter_seconds",
+        key=f"settings_jitter_seconds_{settings_form_nonce}",
     )
     new_cap = st.number_input(
         "Daily cap (max sends per day, across all programs — 0 means no limit)",
         min_value=0,
         value=daily_cap if daily_cap is not None else 0,
         step=1,
-        key="settings_daily_cap",
+        key=f"settings_daily_cap_{settings_form_nonce}",
     )
     submitted = st.form_submit_button("Save settings")
 
@@ -102,11 +106,5 @@ with st.form("settings_form"):
             daily_cap=new_cap,
         )
         st.session_state.settings_saved = get_settings(conn)
-        for key in (
-            "settings_dry_run",
-            "settings_delay_seconds",
-            "settings_jitter_seconds",
-            "settings_daily_cap",
-        ):
-            st.session_state.pop(key, None)
+        st.session_state.settings_form_nonce += 1
         st.rerun()
