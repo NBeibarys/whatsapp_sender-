@@ -36,5 +36,5 @@ with st.form("settings_form"):
             (int(new_dry_run), new_delay, new_jitter, cap_value),
         )
         conn.commit()
-        st.success("Settings saved.")
+        st.toast("Settings saved.", icon="✅")
         st.rerun()
