@@ -22,6 +22,9 @@
       {% block sidebar %}{% endblock %}
     </aside>
     <main class="main">
+      <!-- Global connection banner: filled in by app.js on every page so a
+           dead worker / unlinked WhatsApp can never fail silently. -->
+      <div id="conn-banner" class="conn-banner hidden" role="status" aria-live="polite"></div>
       {% block content %}{% endblock %}
     </main>
   </div>

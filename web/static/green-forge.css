@@ -327,6 +327,45 @@ select {
 .block-warn { border-color: rgba(242, 177, 52, .4); background: rgba(242, 177, 52, .05); }
 .block-bad { border-color: rgba(242, 85, 90, .4); background: rgba(242, 85, 90, .05); }
 
+/* ---------- Global connection banner ---------- */
+/* Sticky at the top of the content column, on every page, and deliberately
+   not dismissible: a halted sender must keep nagging. Same tint recipe as
+   .block-* (border .4 alpha / bg .05 alpha) layered over an opaque base so
+   content scrolling underneath stays readable. */
+
+.conn-banner {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  padding: 11px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line);
+  background: var(--card);
+  font-size: .93rem;
+}
+
+.conn-banner-text strong { font-weight: 650; }
+
+.conn-banner-warn {
+  border-color: rgba(242, 177, 52, .4);
+  background: linear-gradient(rgba(242, 177, 52, .05), rgba(242, 177, 52, .05)), var(--card);
+}
+.conn-banner-warn .conn-banner-text strong { color: var(--warn); }
+
+.conn-banner-bad {
+  border-color: rgba(242, 85, 90, .4);
+  background: linear-gradient(rgba(242, 85, 90, .05), rgba(242, 85, 90, .05)), var(--card);
+}
+.conn-banner-bad .conn-banner-text strong { color: var(--bad); }
+
+.conn-banner .btn { flex-shrink: 0; }
+
 /* ---------- Segmented control ---------- */
 
 .seg {

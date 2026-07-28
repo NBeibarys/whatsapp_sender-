@@ -70,6 +70,77 @@
     };
   }
 
+  // ---------- Connection status hub ----------
+  // One /api/connection/status poll feeds every listener: the global banner
+  // (on every page) and the Connection page share a single fetch, so adding
+  // the banner does not double-poll on /connection.
+
+  var connectionStatus = (function () {
+    var listeners = [];
+    var poller = null;
+
+    function emit(status) {
+      listeners.forEach(function (fn) {
+        try {
+          fn(status);
+        } catch (err) {
+          // A broken listener must not stop the others (or the poll).
+          console.error("connection status listener failed", err);
+        }
+      });
+    }
+
+    function refresh() {
+      return fetchJSON("/api/connection/status").then(function (status) {
+        emit(status);
+        return status;
+      });
+    }
+
+    return {
+      subscribe: function (fn) { listeners.push(fn); },
+      refresh: function () { return refresh().catch(function () { /* toast shown */ }); },
+      start: function (intervalMs) {
+        if (poller) return;
+        poller = makePoller(function () {
+          refresh().catch(function () { /* toast shown */ });
+        }, intervalMs);
+        poller.start();
+      },
+    };
+  })();
+
+  // ---------- Global connection banner ----------
+
+  function initConnectionBanner() {
+    var banner = $("#conn-banner");
+    if (!banner) return;
+    var onConnectionPage = document.body.dataset.page === "connection";
+
+    connectionStatus.subscribe(function (status) {
+      if (status.connected) {
+        // Healthy: no chrome at all.
+        banner.className = "conn-banner hidden";
+        banner.innerHTML = "";
+        return;
+      }
+      var tone, text;
+      if (!status.worker_alive) {
+        tone = "conn-banner-bad";
+        text = "<strong>Worker not running</strong> — sending is halted.";
+      } else if (status.qr_data_url) {
+        tone = "conn-banner-warn";
+        text = "<strong>WhatsApp disconnected</strong> — scan the QR to resume sending.";
+      } else {
+        tone = "conn-banner-warn";
+        text = "<strong>WhatsApp disconnected</strong> — preparing a new QR…";
+      }
+      banner.className = "conn-banner " + tone;
+      banner.innerHTML = '<span class="conn-banner-text">' + text + "</span>"
+        + (onConnectionPage ? "" : '<a class="btn btn-sm" href="/connection">Open Connection</a>');
+    });
+  }
+
   function showOverlay(text) {
     var overlay = $("#overlay");
     if (!overlay) return;
@@ -971,18 +1042,13 @@
       }
     }
 
-    var poller = makePoller(async function () {
-      var status = await fetchJSON("/api/connection/status");
+    // The shared hub owns the fetch (started in the boot block below); this
+    // page just listens, and can force an out-of-band refresh.
+    connectionStatus.subscribe(function (status) {
       renderStatus(status);
       renderQR(status);
-    }, 2000);
-    function poll() {
-      fetchJSON("/api/connection/status").then(function (status) {
-        renderStatus(status);
-        renderQR(status);
-      }).catch(function () { /* toast shown */ });
-    }
-    poller.start();
+    });
+    function poll() { connectionStatus.refresh(); }
 
     $("#qr-refresh-btn").addEventListener("click", poll);
 
@@ -1077,8 +1143,13 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     var page = document.body.dataset.page;
+    initConnectionBanner();
     if (page === "campaign") initCampaign();
     else if (page === "connection") initConnection();
     else if (page === "settings") initSettings();
+    // Started last so every listener is subscribed before the first fetch.
+    // The Connection page needs a snappier poll (QR turnaround); everywhere
+    // else the banner is happy at 5s.
+    connectionStatus.start(page === "connection" ? 2000 : 5000);
   });
 })();
