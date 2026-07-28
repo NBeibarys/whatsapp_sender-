@@ -549,3 +549,151 @@ def test_root_redirects_to_campaigns(client):
     resp = client.get("/", follow_redirects=False)
     assert resp.status_code in (302, 307)
     assert resp.headers["location"] == "/campaigns"
+
+
+# --- Truthful delivery status + reply inbox ---
+
+
+def _campaign_with_contact(client, conn, name="Delivery", phone="+77010000099"):
+    program_id = client.post(
+        "/api/campaigns", json={"name": name, "template_text": "Hi {{name}}"}
+    ).json()["id"]
+    client.post(f"/api/campaigns/{program_id}/contacts", json={"phone": phone, "name": "A"})
+    contact_id = conn.execute(
+        "SELECT id FROM contacts WHERE program_id = ?", (program_id,)
+    ).fetchone()[0]
+    return program_id, contact_id
+
+
+def test_status_returns_delivery_counts(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn)
+    conn.execute(
+        "UPDATE contacts SET status='sent', delivery_state='delivered' WHERE id = ?", (contact_id,)
+    )
+    conn.commit()
+
+    body = client.get(f"/api/campaigns/{program_id}/status").json()
+
+    assert body["delivered_count"] == 1
+    assert body["delivery_counts"]["delivered"] == 1
+    assert body["rejected_count"] == 0
+    assert body["halted"] is False
+
+
+def test_status_reports_rejections_and_the_halt(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Rejected")
+    conn.execute(
+        "UPDATE contacts SET status='failed', delivery_state='rejected', ack_error='463' "
+        "WHERE id = ?",
+        (contact_id,),
+    )
+    conn.execute(
+        "UPDATE worker_heartbeat SET halted_at = '2026-07-28T20:00:00Z', "
+        "halt_reason = '3 messages in a row were not accepted by WhatsApp.'"
+    )
+    conn.commit()
+
+    body = client.get(f"/api/campaigns/{program_id}/status").json()
+
+    assert body["rejected_count"] == 1
+    assert body["halted"] is True
+    assert "not accepted by WhatsApp" in body["halt_reason"]
+
+
+def test_contacts_endpoint_returns_the_new_delivery_fields(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Fields")
+    conn.execute(
+        "UPDATE contacts SET status='sent', delivery_state='read', wa_message_id='MSG1', "
+        "delivered_at='2026-07-28T20:00:00Z', read_at='2026-07-28T20:01:00Z' WHERE id = ?",
+        (contact_id,),
+    )
+    conn.commit()
+
+    contact = client.get(f"/api/campaigns/{program_id}/contacts").json()[0]
+
+    assert contact["delivery_state"] == "read"
+    assert contact["wa_message_id"] == "MSG1"
+    assert contact["delivered_at"] == "2026-07-28T20:00:00Z"
+    assert contact["read_at"] == "2026-07-28T20:01:00Z"
+    assert contact["ack_error"] is None
+
+
+def test_replies_endpoint_returns_bodies_newest_first(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Inbox")
+    conn.executemany(
+        "INSERT INTO replies (contact_id, phone, body, received_at) VALUES (?, ?, ?, ?)",
+        [
+            (contact_id, "+77010000099", "first", "2026-07-28T10:00:00Z"),
+            (contact_id, "+77010000099", "second", "2026-07-28T11:00:00Z"),
+        ],
+    )
+    conn.commit()
+
+    replies = client.get(f"/api/campaigns/{program_id}/replies").json()
+
+    assert [r["body"] for r in replies] == ["second", "first"]
+    assert replies[0]["contact_id"] == contact_id
+    assert replies[0]["name"] == "A"
+
+
+def test_replies_endpoint_is_empty_for_a_campaign_without_replies(client, conn):
+    program_id, _ = _campaign_with_contact(client, conn, name="Quiet")
+
+    assert client.get(f"/api/campaigns/{program_id}/replies").json() == []
+
+
+def test_replies_endpoint_404s_for_an_unknown_campaign(client):
+    assert client.get("/api/campaigns/9999/replies").status_code == 404
+
+
+def test_status_reports_the_sending_window_and_daily_cap(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Window")
+    conn.execute("UPDATE contacts SET status='pending' WHERE id = ?", (contact_id,))
+    conn.execute(
+        "UPDATE settings SET send_window_start='09:00', send_window_end='09:00', "
+        "send_timezone='Asia/Almaty', daily_cap=10 WHERE id = 1"
+    )
+    conn.commit()
+
+    body = client.get(f"/api/campaigns/{program_id}/status").json()
+
+    # start == end is a full day, so sending is allowed right now.
+    assert body["send_window"]["allowed"] is True
+    assert body["send_window"]["timezone"] == "Asia/Almaty"
+    assert body["daily_cap"] == 10
+    assert body["remaining_today"] == 10 - body["sent_today"]
+
+
+def test_status_suppresses_eta_outside_the_sending_window(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Closed")
+    conn.execute("UPDATE contacts SET status='pending' WHERE id = ?", (contact_id,))
+    # A one-minute window that is almost certainly closed right now.
+    conn.execute(
+        "UPDATE settings SET send_window_start='03:00', send_window_end='03:01', "
+        "send_timezone='UTC' WHERE id = 1"
+    )
+    conn.commit()
+
+    body = client.get(f"/api/campaigns/{program_id}/status").json()
+
+    if not body["send_window"]["allowed"]:
+        assert body["eta_minutes"] is None
+        assert "Outside the sending window" in body["send_window"]["reason"]
+
+
+def test_status_exposes_the_plain_language_rejection_reason(client, conn):
+    program_id, contact_id = _campaign_with_contact(client, conn, name="Why")
+    conn.execute(
+        "UPDATE contacts SET status='failed', delivery_state='rejected', ack_error='463', "
+        "error_message='WhatsApp is refusing new conversations from this linked device.' "
+        "WHERE id = ?",
+        (contact_id,),
+    )
+    conn.commit()
+
+    body = client.get(f"/api/campaigns/{program_id}/status").json()
+
+    assert body["rejection_reason"] == (
+        "WhatsApp is refusing new conversations from this linked device."
+    )
+    assert "463" not in body["rejection_reason"]

@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from app import db as appdb
 from app.csv_import import map_contact_rows, parse_contacts_rows, parse_pasted_contacts
+from app.send_window import evaluate_send_window
 from web import csv_helpers
 from web.deps import get_db
 from web.templating import templates
@@ -501,20 +502,46 @@ def add_manual_contact(
 def campaign_status(program_id: int, conn: sqlite3.Connection = Depends(get_db)):
     program = _require_program(conn, program_id)
     status = appdb.get_status_counts(conn, program_id)
-    delay_seconds, _, _, _ = appdb.get_settings(conn)
+    settings = appdb.get_full_settings(conn)
+    delay_seconds = settings["delay_seconds"]
+    send_window = evaluate_send_window(
+        settings["send_window_start"], settings["send_window_end"], settings["send_timezone"]
+    )
     pending_count = status["counts"]["pending"]
+    # No ETA while nothing can go out (paused, or outside the sending window).
     eta_minutes = (
         round(pending_count * delay_seconds / 60, 1)
-        if pending_count and not program["paused"]
+        if pending_count and not program["paused"] and send_window["allowed"]
         else None
     )
+    heartbeat = appdb.get_heartbeat(conn)
+    sent_today = appdb.count_sent_today(conn)
+    cap = settings["daily_cap"]
     return {
         "counts": status["counts"],
         "replied_count": status["replied_count"],
+        "delivery_counts": status["delivery_counts"],
+        "delivered_count": status["delivered_count"],
+        "rejected_count": status["rejected_count"],
+        # Plain language, never a bare error number.
+        "rejection_reason": status["rejection_reason"],
+        "send_window": send_window,
+        "daily_cap": cap,
+        "sent_today": sent_today,
+        "remaining_today": None if cap is None else max(cap - sent_today, 0),
         "eta_minutes": eta_minutes,
         "paused": program["paused"],
         "delay_seconds": delay_seconds,
+        # The halt is global, but it must be visible on the campaign card too.
+        "halted": heartbeat["halted"],
+        "halt_reason": heartbeat["halt_reason"],
     }
+
+
+@router.get("/api/campaigns/{program_id}/replies")
+def campaign_replies(program_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    _require_program(conn, program_id)
+    return appdb.list_replies(conn, program_id)
 
 
 @router.get("/api/campaigns/{program_id}/contacts")

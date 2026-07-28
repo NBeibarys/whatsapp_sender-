@@ -124,3 +124,41 @@ def test_test_message_unpauses_existing_test_program(client, conn):
 def test_connection_page_renders(client):
     resp = client.get("/connection")
     assert resp.status_code == 200
+
+
+def test_connection_status_reports_the_halt(client, conn):
+    conn.execute(
+        "UPDATE worker_heartbeat SET halted_at = '2026-07-28T20:00:00Z', "
+        "halt_reason = 'WhatsApp is refusing new conversations from this linked device.'"
+    )
+    conn.commit()
+
+    body = client.get("/api/connection/status").json()
+
+    assert body["halted"] is True
+    assert body["halted_at"] == "2026-07-28T20:00:00Z"
+    assert "refusing new conversations" in body["halt_reason"]
+
+
+def test_resume_sending_clears_the_halt_but_leaves_programs_paused(client, conn):
+    conn.execute("INSERT INTO programs (name, template_text, paused) VALUES ('P', 'Hi', 1)")
+    conn.execute(
+        "UPDATE worker_heartbeat SET halted_at = '2026-07-28T20:00:00Z', halt_reason = 'nope'"
+    )
+    conn.commit()
+
+    body = client.post("/api/sending/resume").json()
+
+    assert body["halted"] is False
+    assert body["programs_still_paused"] is True
+    status = client.get("/api/connection/status").json()
+    assert status["halted"] is False
+    assert status["halt_reason"] is None
+    # The worker paused these for a reason — resuming must not unpause them.
+    assert conn.execute("SELECT paused FROM programs WHERE name = 'P'").fetchone()[0] == 1
+
+
+def test_connection_status_is_not_halted_by_default(client):
+    body = client.get("/api/connection/status").json()
+    assert body["halted"] is False
+    assert body["halt_reason"] is None

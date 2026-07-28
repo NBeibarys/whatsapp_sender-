@@ -64,7 +64,18 @@ def connection_status(conn: sqlite3.Connection = Depends(get_db)):
         "qr_data_url": qr_code,
         "disconnect_requested": heartbeat["disconnect_requested"],
         "worker_message": worker_message,
+        # Auto-halt state — the global banner polls this endpoint only.
+        "halted": heartbeat["halted"],
+        "halt_reason": heartbeat["halt_reason"],
+        "halted_at": heartbeat["halted_at"],
     }
+
+
+@router.post("/api/sending/resume")
+def resume_sending(conn: sqlite3.Connection = Depends(get_db)):
+    """Clear the worker's auto-halt. Campaigns stay paused on purpose."""
+    appdb.clear_halt(conn)
+    return {"halted": False, "programs_still_paused": True}
 
 
 @router.post("/api/connection/disconnect")

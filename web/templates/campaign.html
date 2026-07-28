@@ -194,8 +194,23 @@
   <!-- Status -->
   <section class="card">
     <h2 class="card-title">Status</h2>
+    <div class="block block-bad mb hidden" id="status-halt"></div>
+    <div class="block block-bad mb hidden" id="status-reject-reason"></div>
+    <div class="block block-warn mb hidden" id="status-window"></div>
     <div class="tiles" id="status-tiles"></div>
     <div class="row" id="status-actions"></div>
+  </section>
+
+  <!-- Replies -->
+  <section class="card hidden" id="replies-card">
+    <div class="row-between">
+      <h2 class="card-title" style="margin: 0;">Replies
+        <span class="count-caption" id="replies-count"></span>
+      </h2>
+      <button type="button" class="btn btn-sm" id="replies-toggle" aria-expanded="true"
+              aria-controls="replies-body">Hide</button>
+    </div>
+    <div class="replies mt" id="replies-body"></div>
   </section>
 
   <!-- Contacts -->

@@ -118,6 +118,20 @@
     var onConnectionPage = document.body.dataset.page === "connection";
 
     connectionStatus.subscribe(function (status) {
+      // A halt means messages are NOT going out — it outranks every other
+      // state, including a healthy connection.
+      if (status.halted) {
+        banner.className = "conn-banner conn-banner-bad";
+        banner.innerHTML = '<span class="conn-banner-text"><strong>Sending halted</strong> — '
+          + esc(status.halt_reason || "WhatsApp kept rejecting messages.") + "</span>"
+          + '<button type="button" class="btn btn-sm" id="halt-resume-btn">Resume sending</button>';
+        $("#halt-resume-btn").addEventListener("click", async function () {
+          await postJSON("/api/sending/resume");
+          toast("Sending un-halted. Campaigns stay paused — start the one you want.");
+          connectionStatus.refresh();
+        });
+        return;
+      }
       if (status.connected) {
         // Healthy: no chrome at all.
         banner.className = "conn-banner hidden";
@@ -200,6 +214,38 @@
 
   function statusBadge(status) {
     return '<span class="badge ' + (STATUS_BADGES[status] || "badge-dim") + '">' + esc(status) + "</span>";
+  }
+
+  // What WhatsApp actually told us, shown next to the workflow status.
+  var DELIVERY_LABELS = {
+    pending_ack: "awaiting ack",
+    server_ack: "server ack",
+    delivered: "delivered",
+    read: "read",
+    rejected: "rejected",
+  };
+
+  function deliveryNote(contact) {
+    if (!contact.delivery_state) return "";
+    var label = DELIVERY_LABELS[contact.delivery_state] || contact.delivery_state;
+    // Never surface a bare error number: the plain-language reason is in
+    // error_message (and in the tooltip); the code only rides along there.
+    var title = "";
+    if (contact.delivery_state === "rejected") {
+      title = (contact.error_message || "WhatsApp refused this message.")
+        + (contact.ack_error ? " (code " + contact.ack_error + ")" : "");
+    }
+    return ' <span class="delivery-note"' + (title ? ' title="' + esc(title) + '"' : "")
+      + ">&middot; " + esc(label) + "</span>";
+  }
+
+  function shortTime(value) {
+    if (!value) return "";
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return String(value);
+    return d.toLocaleString(undefined, {
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+    });
   }
 
   // ---------- Campaign page ----------
@@ -793,16 +839,63 @@
 
     function renderStatusTiles(status) {
       var counts = status.counts;
+      var outsideWindow = status.send_window && !status.send_window.allowed;
       var pendingNote = status.eta_minutes != null
         ? "~" + status.eta_minutes + " min remaining"
-        : (counts.pending && status.paused ? "Paused" : "No active queue");
+        : (counts.pending && status.paused ? "Paused"
+          : (counts.pending && outsideWindow ? "Outside sending window" : "No active queue"));
+
+      var haltBox = $("#status-halt");
+      if (status.halted) {
+        haltBox.innerHTML = "<strong>Sending halted</strong> — " + esc(status.halt_reason || "")
+          + " Use <em>Resume sending</em> in the banner above, then start this campaign.";
+        haltBox.classList.remove("hidden");
+      } else {
+        haltBox.classList.add("hidden");
+      }
+
+      var rejected = status.rejected_count || 0;
+
+      // Why WhatsApp refused, in words — never just an error number.
+      var reasonBox = $("#status-reject-reason");
+      if (rejected && status.rejection_reason) {
+        reasonBox.innerHTML = "<strong>WhatsApp refused " + rejected + " message"
+          + (rejected === 1 ? "" : "s") + ":</strong> " + esc(status.rejection_reason);
+        reasonBox.classList.remove("hidden");
+      } else {
+        reasonBox.classList.add("hidden");
+      }
+
+      // Sending window / daily cap state.
+      var windowBox = $("#status-window");
+      var notes = [];
+      if (status.send_window && !status.send_window.allowed) {
+        notes.push("<strong>Outside the sending window</strong> — "
+          + esc(status.send_window.window) + ". Local time is "
+          + esc(status.send_window.local_time) + "; sending resumes when the window opens.");
+      }
+      if (status.daily_cap != null) {
+        notes.push("Daily cap <strong>" + status.daily_cap + "/day</strong> — "
+          + status.sent_today + " sent today, " + status.remaining_today + " remaining.");
+      }
+      if (notes.length) {
+        windowBox.innerHTML = notes.join("<br>");
+        windowBox.classList.remove("hidden");
+      } else {
+        windowBox.classList.add("hidden");
+      }
       var tiles = [
         { label: "Pending", value: counts.pending, note: pendingNote, cls: "" },
-        { label: "Sent", value: counts.sent, note: "Delivered by sender", cls: "tile-accent" },
+        { label: "Sent", value: counts.sent, note: "Accepted by WhatsApp", cls: "" },
+        {
+          label: "Delivered", value: status.delivered_count || 0,
+          note: "Confirmed on the phone", cls: "tile-accent",
+        },
         { label: "Replied", value: status.replied_count, note: "Contacts with replies", cls: "" },
         {
           label: "Failed", value: counts.failed,
-          note: counts.failed ? "Needs retry" : "No failures",
+          note: rejected ? rejected + " rejected by WhatsApp"
+            : (counts.failed ? "Needs retry" : "No failures"),
           cls: counts.failed ? "tile-bad" : "",
         },
       ];
@@ -887,20 +980,34 @@
         return;
       }
       box.innerHTML = '<div class="tbl-wrap"><table class="tbl"><thead><tr>'
-        + "<th></th><th>phone</th><th>name</th><th>status</th><th>sent_at</th><th>replied_at</th><th>error_message</th>"
+        + "<th></th><th>phone</th><th>name</th><th>status</th><th>sent_at</th>"
+        + "<th>delivery</th><th>replied_at</th><th>error_message</th>"
         + "</tr></thead><tbody>"
         + shown.map(function (c) {
           var selected = selection.has(c.id);
           function cell(value) {
             return value ? "<td>" + esc(value) + "</td>" : '<td class="empty">&mdash;</td>';
           }
+          // Compact timestamps: raw ISO strings made the table scroll sideways
+          // once the delivery column was added.
+          function timeCell(value) {
+            return value
+              ? '<td class="mono">' + esc(shortTime(value)) + "</td>"
+              : '<td class="empty">&mdash;</td>';
+          }
+          // One delivery column: the newest confirmation we have.
+          var deliveryAt = c.read_at
+            ? "read " + shortTime(c.read_at)
+            : (c.delivered_at ? "delivered " + shortTime(c.delivered_at) : "");
           return '<tr data-id="' + c.id + '"' + (selected ? ' class="selected"' : "") + ">"
             + '<td><input type="checkbox" class="cb" data-id="' + c.id + '"'
             + (selected ? " checked" : "") + ' aria-label="Select ' + esc(c.name) + '"></td>'
             + "<td>" + esc(c.phone) + "</td>"
             + "<td>" + esc(c.name) + "</td>"
-            + "<td>" + statusBadge(c.status) + "</td>"
-            + cell(c.sent_at) + cell(c.replied_at) + cell(c.error_message)
+            + "<td>" + statusBadge(c.status) + deliveryNote(c) + "</td>"
+            + timeCell(c.sent_at)
+            + (deliveryAt ? '<td class="mono">' + esc(deliveryAt) + "</td>" : '<td class="empty">&mdash;</td>')
+            + timeCell(c.replied_at) + cell(c.error_message)
             + "</tr>";
         }).join("")
         + "</tbody></table></div>";
@@ -947,13 +1054,52 @@
       refreshStatus();
     });
 
+    // --- Replies inbox (collapsible, hidden until someone replies) ---
+    var repliesCard = $("#replies-card");
+    var repliesBody = $("#replies-body");
+    var repliesToggle = $("#replies-toggle");
+    // Open by default: a reply is the outcome the operator is waiting for.
+    var repliesOpen = true;
+    var lastRepliesSig = "";
+
+    repliesToggle.addEventListener("click", function () {
+      repliesOpen = !repliesOpen;
+      repliesBody.classList.toggle("hidden", !repliesOpen);
+      repliesToggle.textContent = repliesOpen ? "Hide" : "Show";
+      repliesToggle.setAttribute("aria-expanded", String(repliesOpen));
+    });
+
+    function renderReplies(replies) {
+      var sig = JSON.stringify(replies);
+      if (sig === lastRepliesSig) return;
+      lastRepliesSig = sig;
+
+      if (!replies.length) {
+        repliesCard.classList.add("hidden");
+        return;
+      }
+      repliesCard.classList.remove("hidden");
+      $("#replies-count").textContent = replies.length
+        + (replies.length === 1 ? " reply" : " replies");
+      repliesBody.innerHTML = replies.map(function (r) {
+        return '<div class="reply-row">'
+          + '<div class="reply-head"><span class="reply-name">' + esc(r.name) + "</span>"
+          + '<span class="reply-phone mono">' + esc(r.phone) + "</span>"
+          + '<span class="reply-time mono">' + esc(shortTime(r.received_at)) + "</span></div>"
+          + '<div class="reply-body">' + esc(r.body || "") + "</div>"
+          + "</div>";
+      }).join("");
+    }
+
     async function refreshStatus() {
       var results = await Promise.all([
         fetchJSON("/api/campaigns/" + programId + "/status"),
         fetchJSON("/api/campaigns/" + programId + "/contacts"),
+        fetchJSON("/api/campaigns/" + programId + "/replies"),
       ]);
       latestStatus = results[0];
       latestContacts = results[1];
+      renderReplies(results[2]);
       if (latestStatus.paused !== paused) {
         paused = latestStatus.paused;
         renderPauseBtn();
@@ -1076,6 +1222,9 @@
     var delay = $("#set-delay");
     var jitter = $("#set-jitter");
     var cap = $("#set-cap");
+    var windowStart = $("#set-window-start");
+    var windowEnd = $("#set-window-end");
+    var timezone = $("#set-timezone");
 
     function intValue(input) {
       var value = parseInt(input.value, 10);
@@ -1092,18 +1241,72 @@
       $("#pacing-caption").textContent = "Each send waits " + d + "–" + (d + j) + "s";
     }
 
+    function updateWindowCaption() {
+      var caption = $("#window-caption");
+      var zone = timezone.value.trim() || "UTC";
+      if (!windowStart.value || !windowEnd.value) {
+        caption.textContent = "No window — the worker sends at any hour.";
+        return;
+      }
+      var crosses = windowStart.value > windowEnd.value;
+      caption.textContent = "Sends only between " + windowStart.value + "–" + windowEnd.value
+        + " " + zone + (crosses ? " (crosses midnight)" : "");
+    }
+
+    // Current effect of the cap, in words, next to the input.
+    function renderCapEffect(settings) {
+      var box = $("#cap-effect");
+      var value = intValue(cap);
+      if (!value) {
+        box.innerHTML = "<strong>Currently unlimited</strong> — no daily ceiling on sends."
+          + (settings ? ' <span class="count-caption">' + settings.sent_today
+            + " sent today.</span>" : "");
+        return;
+      }
+      var note = value + " sends/day across all campaigns.";
+      if (settings && settings.daily_cap === value) {
+        note += " " + settings.sent_today + " sent today, "
+          + settings.remaining_today + " remaining.";
+      } else {
+        note += " Save to apply.";
+      }
+      box.innerHTML = "<strong>" + esc(String(value)) + " sends/day</strong> — " + esc(note);
+    }
+
+    var loadedSettings = null;
+
+    function fillTimezoneOptions(options) {
+      $("#tz-options").innerHTML = (options || []).map(function (tz) {
+        return '<option value="' + esc(tz) + '"></option>';
+      }).join("");
+    }
+
     dryRun.addEventListener("change", updateLiveBadge);
     delay.addEventListener("input", updatePacingCaption);
     jitter.addEventListener("input", updatePacingCaption);
+    cap.addEventListener("input", function () { renderCapEffect(loadedSettings); });
+    [windowStart, windowEnd, timezone].forEach(function (input) {
+      input.addEventListener("input", updateWindowCaption);
+      input.addEventListener("change", updateWindowCaption);
+    });
 
-    fetchJSON("/api/settings").then(function (settings) {
+    function applySettings(settings) {
+      loadedSettings = settings;
       dryRun.checked = settings.dry_run;
       delay.value = settings.delay_seconds;
       jitter.value = settings.jitter_seconds;
       cap.value = settings.daily_cap != null ? settings.daily_cap : 0;
+      windowStart.value = settings.send_window_start || "";
+      windowEnd.value = settings.send_window_end || "";
+      timezone.value = settings.send_timezone || "UTC";
+      fillTimezoneOptions(settings.timezone_options);
       updateLiveBadge();
       updatePacingCaption();
-    });
+      updateWindowCaption();
+      renderCapEffect(settings);
+    }
+
+    fetchJSON("/api/settings").then(applySettings);
 
     $("#save-settings-btn").addEventListener("click", async function () {
       var numericFields = [[delay, "delay"], [jitter, "jitter"], [cap, "daily cap"]];
@@ -1121,21 +1324,22 @@
           delay_seconds: intValue(delay),
           jitter_seconds: intValue(jitter),
           daily_cap: intValue(cap),
+          send_window_start: windowStart.value || null,
+          send_window_end: windowEnd.value || null,
+          send_timezone: timezone.value.trim() || null,
         }),
       });
-      dryRun.checked = saved.dry_run;
-      delay.value = saved.delay_seconds;
-      jitter.value = saved.jitter_seconds;
-      cap.value = saved.daily_cap != null ? saved.daily_cap : 0;
-      updateLiveBadge();
-      updatePacingCaption();
+      applySettings(saved);
       toast("Settings saved.");
       $("#saved-card").classList.remove("hidden");
       $("#saved-summary").innerHTML =
         "<dt>Mode</dt><dd>" + (saved.dry_run ? "dry run" : "LIVE SENDING") + "</dd>"
         + "<dt>Delay</dt><dd>" + saved.delay_seconds + "s</dd>"
         + "<dt>Jitter</dt><dd>" + saved.jitter_seconds + "s</dd>"
-        + "<dt>Daily cap</dt><dd>" + (saved.daily_cap != null ? saved.daily_cap : "no limit") + "</dd>";
+        + "<dt>Daily cap</dt><dd>" + (saved.daily_cap != null ? saved.daily_cap : "no limit") + "</dd>"
+        + "<dt>Window</dt><dd>" + esc(saved.send_window.window || "any hour") + "</dd>"
+        + "<dt>Right now</dt><dd>" + (saved.send_window.allowed ? "inside the window" : "outside the window")
+        + " (" + esc(saved.send_window.local_time) + " " + esc(saved.send_window.timezone) + ")</dd>";
     });
   }
 

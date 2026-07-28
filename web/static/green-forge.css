@@ -210,7 +210,7 @@ label, .label {
 
 .field { margin-bottom: 14px; }
 
-input[type="text"], input[type="number"], input[type="tel"], textarea, select {
+input[type="text"], input[type="number"], input[type="tel"], input[type="time"], textarea, select {
   width: 100%;
   background: #0b0e15;
   border: 1px solid var(--line-2);
@@ -228,7 +228,10 @@ input:focus, textarea:focus, select:focus {
 textarea { resize: vertical; min-height: 120px; line-height: 1.55; }
 input::placeholder, textarea::placeholder { color: var(--fg-faint); }
 
-input[type="number"] { font-family: var(--mono); }
+input[type="number"], input[type="time"] { font-family: var(--mono); }
+/* The native time picker renders light-on-light without this. */
+input[type="time"] { color-scheme: dark; }
+input[type="time"]::-webkit-calendar-picker-indicator { filter: invert(0.7); cursor: pointer; }
 
 select {
   appearance: none;
@@ -828,3 +831,35 @@ hr.sep { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 .help { color: var(--fg-faint); font-size: .84rem; line-height: 1.5; }
 
 .count-caption { font-family: var(--mono); font-size: .8rem; color: var(--fg-faint); }
+
+/* ---------- Delivery truth + replies ---------- */
+
+/* What WhatsApp actually confirmed, next to the workflow status badge. */
+.delivery-note {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.replies { display: flex; flex-direction: column; gap: 10px; }
+
+.reply-row {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--card-2);
+  padding: 10px 12px;
+}
+
+.reply-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.reply-name { font-weight: 600; }
+.reply-phone { font-size: .78rem; color: var(--fg-dim); }
+.reply-time { font-size: .74rem; color: var(--fg-faint); margin-left: auto; }
+.reply-body { color: var(--fg); white-space: pre-wrap; word-break: break-word; }

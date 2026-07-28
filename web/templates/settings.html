@@ -35,6 +35,35 @@
     Jitter is a random extra wait added to each delay, making the pacing look human.
     Recommended: 60s delay + 15s jitter to reduce the risk of WhatsApp blocking the number.
   </p>
+
+  <hr class="sep">
+
+  <h3 class="card-title" style="font-size: .95rem;">Sending window</h3>
+  <p class="card-caption">
+    The worker only sends between these times. Outside the window it idles —
+    nothing is queued, consumed, or marked failed. Leave both empty to send at any hour.
+  </p>
+  <div class="grid-4 mb">
+    <div>
+      <label for="set-window-start">Start (24h)</label>
+      <input type="time" id="set-window-start" class="mono">
+    </div>
+    <div>
+      <label for="set-window-end">End (24h)</label>
+      <input type="time" id="set-window-end" class="mono">
+    </div>
+    <div>
+      <label for="set-timezone">Time zone</label>
+      <input type="text" id="set-timezone" class="mono" list="tz-options"
+             autocomplete="off" placeholder="Asia/Almaty" spellcheck="false">
+      <datalist id="tz-options"></datalist>
+    </div>
+  </div>
+  <p class="count-caption" id="window-caption"></p>
+  <p class="help mt">
+    Pick any zone from the list or type any IANA name (e.g. <span class="mono">America/Sao_Paulo</span>).
+    A window that ends before it starts crosses midnight — 22:00&ndash;06:00 sends overnight.
+  </p>
 </section>
 
 <section class="card">
@@ -43,6 +72,7 @@
     <label for="set-cap">Daily cap (max sends per day, across all campaigns — 0 means no limit)</label>
     <input type="number" id="set-cap" min="0" step="1">
   </div>
+  <div class="block mt" id="cap-effect"></div>
 </section>
 
 <button type="button" class="btn btn-primary" id="save-settings-btn">Save settings</button>
