@@ -67,7 +67,7 @@ def test_insert_contacts_flags_duplicates(conn):
 
 
 def test_add_attachment_saves_file_and_returns_id(conn, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("app.db.MEDIA_DIR", str(tmp_path / "media"))
     program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
 
     attachment_id = add_attachment(conn, program_id, "flyer.png", b"fake-image-bytes")
@@ -81,7 +81,7 @@ def test_add_attachment_saves_file_and_returns_id(conn, tmp_path, monkeypatch):
 
 
 def test_add_attachment_classifies_non_image_as_document(conn, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("app.db.MEDIA_DIR", str(tmp_path / "media"))
     program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
 
     add_attachment(conn, program_id, "brochure.pdf", b"fake-pdf-bytes")
@@ -91,7 +91,7 @@ def test_add_attachment_classifies_non_image_as_document(conn, tmp_path, monkeyp
 
 
 def test_delete_attachment_removes_row_and_file(conn, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("app.db.MEDIA_DIR", str(tmp_path / "media"))
     program_id = create_program(conn, "Fall Cohort", "Hi {{name}}")
     attachment_id = add_attachment(conn, program_id, "flyer.png", b"fake-image-bytes")
     file_path = list_attachments(conn, program_id)[0]["file_path"]
@@ -215,7 +215,7 @@ def test_get_settings_creates_default_row_when_missing(conn):
 
     row = get_settings(conn)
 
-    assert row == (60, 0, None, 1)
+    assert row == (60, 15, None, 1)
     saved = conn.execute(
         "SELECT delay_seconds, jitter_seconds, daily_cap, dry_run FROM settings WHERE id = 1"
     ).fetchone()

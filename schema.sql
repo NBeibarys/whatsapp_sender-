@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS settings (
   dry_run INTEGER NOT NULL DEFAULT 1
 );
 INSERT OR IGNORE INTO settings (id, delay_seconds, jitter_seconds, daily_cap, dry_run)
-  VALUES (1, 60, 0, NULL, 1);
+  VALUES (1, 60, 15, NULL, 1);
 
 CREATE TABLE IF NOT EXISTS worker_heartbeat (
   id INTEGER PRIMARY KEY CHECK (id = 1),
