@@ -98,6 +98,7 @@
     <h2 class="card-title">Add contacts</h2>
     <div class="seg mb" role="tablist" aria-label="Add contacts mode">
       <button type="button" class="active" id="tab-csv-btn" role="tab" aria-selected="true">Import CSV</button>
+      <button type="button" id="tab-paste-btn" role="tab" aria-selected="false">Paste list</button>
       <button type="button" id="tab-manual-btn" role="tab" aria-selected="false">Add one</button>
     </div>
 
@@ -151,6 +152,24 @@
           <button type="button" class="btn btn-primary" id="csv-commit-btn"></button>
           <button type="button" class="btn" id="csv-reset-btn">Start over</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Paste list -->
+    <div id="tab-paste" class="hidden" role="tabpanel">
+      <div class="field">
+        <label for="paste-text">One contact per line — phone and name in any order (paste straight from Excel)</label>
+        <textarea id="paste-text" rows="10" class="mono" spellcheck="false"
+                  placeholder="+7 701 234 5678&#9;Aigerim&#10;Bekzat, +77017654321&#10;77012345678; Dana; Astana Hub"></textarea>
+      </div>
+      <p class="count-caption mb hidden" id="paste-spinner">Parsing&hellip;</p>
+      <div id="paste-preview" class="hidden">
+        <p id="paste-counts" class="mb"></p>
+        <div id="paste-valid-preview" class="mb"></div>
+        <div id="paste-invalid-preview" class="mb"></div>
+      </div>
+      <div class="row">
+        <button type="button" class="btn btn-primary" id="paste-commit-btn" disabled>Queue contacts</button>
       </div>
     </div>
 

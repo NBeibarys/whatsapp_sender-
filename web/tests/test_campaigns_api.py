@@ -476,6 +476,68 @@ def test_preview_attachment_caption_notes(client, conn):
     assert "without a caption" in attachments[1]["caption_note"]
 
 
+PASTE_TEXT = (
+    "+77012345678\tAigerim\n"
+    "Bekzat, +77012345679\n"
+    "just some words\n"
+)
+
+
+def test_paste_preview_counts_and_rows(client):
+    program_id = _create_campaign(client)
+    resp = client.post(
+        f"/api/campaigns/{program_id}/contacts/paste", json={"text": PASTE_TEXT}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["valid_count"] == 2
+    assert body["invalid_count"] == 1
+    assert body["valid_preview"][0] == {"phone": "+77012345678", "name": "Aigerim"}
+    assert body["valid_preview"][1]["name"] == "Bekzat"
+    assert body["invalid_rows"][0]["row_number"] == 3
+    assert body["invalid_rows"][0]["line"] == "just some words"
+    assert body["invalid_rows"][0]["error"] == "No phone number found in line"
+
+
+def test_paste_preview_unknown_campaign_404(client):
+    resp = client.post("/api/campaigns/999/contacts/paste", json={"text": "x"})
+    assert resp.status_code == 404
+
+
+def test_paste_oversize_413(client):
+    program_id = _create_campaign(client)
+    big = "x" * (1024 * 1024 + 1)
+    resp = client.post(f"/api/campaigns/{program_id}/contacts/paste", json={"text": big})
+    assert resp.status_code == 413
+    resp = client.post(
+        f"/api/campaigns/{program_id}/contacts/paste/commit", json={"text": big}
+    )
+    assert resp.status_code == 413
+
+
+def test_paste_commit_inserts_and_reports_duplicates(client):
+    program_id = _create_campaign(client)
+    resp = client.post(
+        f"/api/campaigns/{program_id}/contacts/paste/commit", json={"text": PASTE_TEXT}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["inserted"] == 2
+    assert body["duplicates"] == []
+    assert body["invalid_count"] == 1
+
+    resp = client.post(
+        f"/api/campaigns/{program_id}/contacts/paste/commit",
+        json={"text": "+7 701 234 5678\tAigerim"},
+    )
+    body = resp.json()
+    assert body["inserted"] == 0
+    assert body["duplicates"] == ["+77012345678"]
+
+    contacts = client.get(f"/api/campaigns/{program_id}/contacts").json()
+    assert len(contacts) == 2
+
+
 def test_campaigns_page_renders(client):
     _create_campaign(client)
     resp = client.get("/campaigns")

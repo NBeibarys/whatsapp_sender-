@@ -1,4 +1,4 @@
-from app.csv_import import parse_contacts_rows, map_contact_rows
+from app.csv_import import parse_contacts_rows, map_contact_rows, parse_pasted_contacts
 
 
 def test_parse_valid_rows():
@@ -100,3 +100,75 @@ def test_map_contact_rows_normalizes_plus_and_ignored_characters():
 
     assert invalid == []
     assert [contact["phone"] for contact in valid] == ["+998901664050", "+998945122309"]
+
+
+def test_paste_tab_separated_phone_first():
+    valid, invalid = parse_pasted_contacts("+7 701 234 5678\tAigerim")
+
+    assert invalid == []
+    assert valid == [{"phone": "+77012345678", "name": "Aigerim", "extra_fields": {}}]
+
+
+def test_paste_comma_separated_name_first():
+    valid, invalid = parse_pasted_contacts("Bekzat, +7 701 234 5679")
+
+    assert invalid == []
+    assert valid[0]["phone"] == "+77012345679"
+    assert valid[0]["name"] == "Bekzat"
+
+
+def test_paste_semicolon_extra_tokens_become_extra_fields():
+    valid, invalid = parse_pasted_contacts("77012345678; Dana; Astana Hub; seed round")
+
+    assert invalid == []
+    assert valid[0]["phone"] == "+77012345678"
+    assert valid[0]["name"] == "Dana"
+    assert valid[0]["extra_fields"] == {"extra_1": "Astana Hub", "extra_2": "seed round"}
+
+
+def test_paste_multi_space_separated():
+    valid, invalid = parse_pasted_contacts("Aigerim   +7 (701) 234-56-78")
+
+    assert invalid == []
+    assert valid[0]["phone"] == "+77012345678"
+    assert valid[0]["name"] == "Aigerim"
+
+
+def test_paste_header_line_skipped_silently():
+    valid, invalid = parse_pasted_contacts("Phone Number\tName\n+77012345678\tAigerim")
+
+    assert invalid == []
+    assert len(valid) == 1
+    assert valid[0]["name"] == "Aigerim"
+
+
+def test_paste_no_phone_after_first_line_is_invalid():
+    valid, invalid = parse_pasted_contacts("+77012345678\tAigerim\njust some words")
+
+    assert len(valid) == 1
+    assert len(invalid) == 1
+    assert invalid[0]["error"] == "No phone number found in line"
+
+
+def test_paste_blank_lines_skipped_and_row_numbers_original():
+    valid, invalid = parse_pasted_contacts("\n+77012345678\tAigerim\n\nAstana office only\n")
+
+    assert len(valid) == 1
+    assert len(invalid) == 1
+    assert invalid[0]["row_number"] == 4
+    assert invalid[0]["line"] == "Astana office only"
+
+
+def test_paste_phone_only_line_missing_name():
+    valid, invalid = parse_pasted_contacts("+77012345678")
+
+    assert valid == []
+    assert invalid[0]["error"] == "Missing name"
+
+
+def test_paste_bad_phone_reports_error():
+    valid, invalid = parse_pasted_contacts("+712345678901\tAigerim")
+
+    assert valid == []
+    assert len(invalid) == 1
+    assert "phone" in invalid[0]["error"].lower()

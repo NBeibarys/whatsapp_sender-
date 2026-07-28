@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import db as appdb
-from app.csv_import import map_contact_rows, parse_contacts_rows
+from app.csv_import import map_contact_rows, parse_contacts_rows, parse_pasted_contacts
 from web import csv_helpers
 from web.deps import get_db
 from web.templating import templates
@@ -27,6 +27,7 @@ TEMPLATE_FIELD_PATTERN = re.compile(r"\{\{(\w+)\}\}")
 ALLOWED_ATTACHMENT_EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".doc", ".docx"}
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB per attachment file
 CONTACT_STATUSES = ("pending", "sending", "sent", "failed", "needs_review")
+MAX_PASTE_BYTES = 1 * 1024 * 1024  # 1 MB of pasted contact lines
 FIRST_ATTACHMENT_CAPTION_NOTE = "message text is sent as this attachment's caption"
 OTHER_ATTACHMENT_CAPTION_NOTE = "sent immediately after, without a caption"
 
@@ -46,6 +47,10 @@ class TemplateUpdate(BaseModel):
 class ManualContact(BaseModel):
     phone: str
     name: str
+
+
+class PastedContacts(BaseModel):
+    text: str
 
 
 class ContactIds(BaseModel):
@@ -428,6 +433,43 @@ async def csv_commit(
     valid, invalid = _mapped_contacts(
         rows, phone_column, name_column, startup_name_column, email_column, extra_columns
     )
+    inserted, duplicates = appdb.insert_contacts(conn, program_id, valid)
+    return {
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "invalid_count": len(invalid),
+    }
+
+
+# --- Paste-list import ---
+
+
+def _parse_paste_text(text: str):
+    if len(text.encode("utf-8")) > MAX_PASTE_BYTES:
+        raise HTTPException(status_code=413, detail="Pasted text too large (max 1 MB).")
+    return parse_pasted_contacts(text)
+
+
+@router.post("/api/campaigns/{program_id}/contacts/paste")
+def paste_preview(
+    program_id: int, payload: PastedContacts, conn: sqlite3.Connection = Depends(get_db)
+):
+    _require_program(conn, program_id)
+    valid, invalid = _parse_paste_text(payload.text)
+    return {
+        "valid_count": len(valid),
+        "invalid_count": len(invalid),
+        "valid_preview": [_flatten_valid_contact(contact) for contact in valid[:10]],
+        "invalid_rows": invalid,
+    }
+
+
+@router.post("/api/campaigns/{program_id}/contacts/paste/commit")
+def paste_commit(
+    program_id: int, payload: PastedContacts, conn: sqlite3.Connection = Depends(get_db)
+):
+    _require_program(conn, program_id)
+    valid, invalid = _parse_paste_text(payload.text)
     inserted, duplicates = appdb.insert_contacts(conn, program_id, valid)
     return {
         "inserted": inserted,

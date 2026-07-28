@@ -346,18 +346,21 @@
     });
 
     // --- Add contacts: tabs ---
-    var tabCsvBtn = $("#tab-csv-btn");
-    var tabManualBtn = $("#tab-manual-btn");
-    function selectTab(csv) {
-      tabCsvBtn.classList.toggle("active", csv);
-      tabManualBtn.classList.toggle("active", !csv);
-      tabCsvBtn.setAttribute("aria-selected", String(csv));
-      tabManualBtn.setAttribute("aria-selected", String(!csv));
-      $("#tab-csv").classList.toggle("hidden", !csv);
-      $("#tab-manual").classList.toggle("hidden", csv);
-    }
-    tabCsvBtn.addEventListener("click", function () { selectTab(true); });
-    tabManualBtn.addEventListener("click", function () { selectTab(false); });
+    var contactTabs = [
+      { btn: $("#tab-csv-btn"), pane: $("#tab-csv") },
+      { btn: $("#tab-paste-btn"), pane: $("#tab-paste") },
+      { btn: $("#tab-manual-btn"), pane: $("#tab-manual") },
+    ];
+    contactTabs.forEach(function (tab) {
+      tab.btn.addEventListener("click", function () {
+        contactTabs.forEach(function (other) {
+          var active = other === tab;
+          other.btn.classList.toggle("active", active);
+          other.btn.setAttribute("aria-selected", String(active));
+          other.pane.classList.toggle("hidden", !active);
+        });
+      });
+    });
 
     // --- CSV flow ---
     var SKIP = "-- skip --";
@@ -565,6 +568,110 @@
     });
 
     $("#csv-reset-btn").addEventListener("click", resetCsvFlow);
+
+    // --- Paste list flow ---
+    var pasteTextarea = $("#paste-text");
+    var pasteSpinner = $("#paste-spinner");
+    var pasteCommitBtn = $("#paste-commit-btn");
+    var pasteTimer = null;
+    var pasteSeq = 0;
+    var pasteValidCount = 0;
+
+    function clearPastePreview() {
+      pasteValidCount = 0;
+      $("#paste-preview").classList.add("hidden");
+      $("#paste-counts").innerHTML = "";
+      $("#paste-valid-preview").innerHTML = "";
+      $("#paste-invalid-preview").innerHTML = "";
+      pasteCommitBtn.disabled = true;
+      pasteCommitBtn.textContent = "Queue contacts";
+    }
+
+    async function runPastePreview() {
+      var text = pasteTextarea.value;
+      var seq = ++pasteSeq;
+      if (!text.trim()) {
+        pasteSpinner.classList.add("hidden");
+        clearPastePreview();
+        return;
+      }
+      pasteSpinner.classList.remove("hidden");
+      var result;
+      try {
+        result = await postJSON("/api/campaigns/" + programId + "/contacts/paste", { text: text });
+      } finally {
+        if (seq === pasteSeq) pasteSpinner.classList.add("hidden");
+      }
+      if (seq !== pasteSeq) return; // user kept typing — a newer parse is coming
+
+      pasteValidCount = result.valid_count;
+      $("#paste-preview").classList.remove("hidden");
+      $("#paste-counts").innerHTML =
+        '<span class="mono" style="color: var(--accent);">' + result.valid_count + "</span> valid, "
+        + '<span class="mono" style="color:' + (result.invalid_count ? "var(--bad)" : "var(--fg-faint)") + ';">'
+        + result.invalid_count + "</span> invalid";
+
+      var validBox = $("#paste-valid-preview");
+      if (result.valid_preview.length) {
+        var cols = [];
+        result.valid_preview.forEach(function (row) {
+          Object.keys(row).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); });
+        });
+        validBox.innerHTML = '<div class="label">Preview (first 10)</div>'
+          + renderRows(result.valid_preview, cols);
+      } else {
+        validBox.innerHTML = "";
+      }
+
+      var invalidBox = $("#paste-invalid-preview");
+      if (result.invalid_rows.length) {
+        var rejected = result.invalid_rows.map(function (item) {
+          var line = item.line || "";
+          return {
+            row: item.row_number,
+            line: line.length > 60 ? line.slice(0, 57) + "…" : line,
+            error: item.error,
+          };
+        });
+        invalidBox.innerHTML = '<div class="block block-bad"><div class="label">Rejected lines — edit them above and they re-parse automatically</div>'
+          + renderRows(rejected, ["row", "line", "error"]) + "</div>";
+      } else {
+        invalidBox.innerHTML = "";
+      }
+
+      pasteCommitBtn.textContent = "Queue " + result.valid_count + " contact(s)";
+      pasteCommitBtn.disabled = result.valid_count === 0;
+    }
+
+    pasteTextarea.addEventListener("input", function () {
+      // Text changed: any shown preview is stale. Lock committing and mark
+      // in-flight responses stale (seq bump) until the parse for the CURRENT
+      // text lands — only that response re-enables the Queue button.
+      pasteSeq++;
+      pasteValidCount = 0;
+      pasteCommitBtn.disabled = true;
+      pasteSpinner.classList.remove("hidden");
+      clearTimeout(pasteTimer);
+      pasteTimer = setTimeout(function () {
+        runPastePreview().catch(function () { /* toast already shown */ });
+      }, 500);
+    });
+
+    pasteCommitBtn.addEventListener("click", async function () {
+      if (!pasteValidCount) return;
+      var result = await postJSON(
+        "/api/campaigns/" + programId + "/contacts/paste/commit",
+        { text: pasteTextarea.value }
+      );
+      toast("Queued " + result.inserted + " contact(s).");
+      if (result.duplicates.length) {
+        toast("Skipped " + result.duplicates.length + " duplicate(s): " + result.duplicates.join(", "), "warn");
+      }
+      pasteTextarea.value = "";
+      clearPastePreview();
+      refreshPreview();
+      refreshStatus();
+    });
 
     // --- Manual add ---
     $("#manual-form").addEventListener("submit", async function (e) {
