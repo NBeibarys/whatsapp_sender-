@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Campaign — Silkroad Sender{% endblock %}
+{% block page %}campaign{% endblock %}
+
+{% block sidebar %}
+<div class="side-section">
+  <div class="side-title">Campaigns</div>
+  <div class="camp-list">
+    {% for program in programs %}
+    <a class="camp-row{% if selected_program and program.id == selected_program.id %} selected{% endif %}"
+       href="/campaigns?selected={{ program.id }}">
+      {% if program.paused %}<span class="pip-paused" title="Paused"></span>{% endif %}
+      <span class="camp-name">{{ program.name }}</span>
+      <span class="camp-meta">{{ program.sent }}/{{ program.total }}</span>
+    </a>
+    {% else %}
+    <div class="help" style="padding: 0 6px;">No campaigns yet.</div>
+    {% endfor %}
+  </div>
+  <button type="button" class="btn btn-block" id="new-campaign-btn">+ New Campaign</button>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<!-- New campaign -->
+<section class="card{% if selected_program %} hidden{% endif %}" id="new-campaign-card">
+  <h2 class="card-title">New Campaign</h2>
+  <form id="new-campaign-form">
+    <div class="field">
+      <label for="nc-name">Campaign name</label>
+      <input type="text" id="nc-name" name="name" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="nc-template">Message template</label>
+      <p class="card-caption" style="margin: 4px 0 8px;">Use {{ '{{name}}' }} plus any extra CSV column as a placeholder, e.g. {{ '{{startup_name}}' }}.</p>
+      <textarea id="nc-template" name="template_text" rows="7"></textarea>
+    </div>
+    <button type="submit" class="btn btn-primary">Create campaign</button>
+  </form>
+</section>
+
+{% if selected_program %}
+<div id="workspace"
+     data-program-id="{{ selected_program.id }}"
+     data-paused="{{ 1 if selected_program.paused else 0 }}">
+
+  <div class="row-between mb">
+    <h1 style="margin: 0;">{{ selected_program.name }}</h1>
+    <button type="button" class="btn" id="pause-btn"></button>
+  </div>
+
+  <!-- Template -->
+  <section class="card">
+    <h2 class="card-title">Template</h2>
+    <p class="card-caption">Placeholders: {{ '{{name}}' }} plus any extra CSV columns for this campaign's contacts.</p>
+    <div class="field">
+      <label for="template-text">Message text</label>
+      <textarea id="template-text" rows="6">{{ selected_program.template_text }}</textarea>
+    </div>
+    <button type="button" class="btn btn-primary" id="save-template-btn">Save template</button>
+  </section>
+
+  <!-- Attachments -->
+  <section class="card">
+    <h2 class="card-title">Attachments</h2>
+    <p class="card-caption">Images or documents sent with every message. Allowed: .png .jpg .jpeg .pdf .doc .docx</p>
+    <div class="attach-list" id="attachment-list"></div>
+    <div class="dropzone" id="attach-dropzone" tabindex="0" role="button"
+         aria-label="Add attachment files">
+      <strong>Drop files here</strong> or click to browse
+    </div>
+    <input type="file" id="attach-input" class="hidden" multiple
+           accept=".png,.jpg,.jpeg,.pdf,.doc,.docx" aria-hidden="true" tabindex="-1">
+    <div class="attach-list mt hidden" id="attach-pending"></div>
+    <button type="button" class="btn btn-primary mt hidden" id="attach-save-btn">Save attachments</button>
+  </section>
+
+  <!-- Preview -->
+  <section class="card">
+    <h2 class="card-title">Preview</h2>
+    <p class="card-caption" id="preview-caption"></p>
+    <div class="block block-warn mb hidden" id="preview-missing"></div>
+    <div class="msg-preview">
+      <div class="label">Outgoing message</div>
+      <pre id="preview-message"></pre>
+      <div class="attach-context">
+        <div class="label">Attachment context</div>
+        <div id="preview-attachments"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Add contacts -->
+  <section class="card">
+    <h2 class="card-title">Add contacts</h2>
+    <div class="seg mb" role="tablist" aria-label="Add contacts mode">
+      <button type="button" class="active" id="tab-csv-btn" role="tab" aria-selected="true">Import CSV</button>
+      <button type="button" id="tab-manual-btn" role="tab" aria-selected="false">Add one</button>
+    </div>
+
+    <!-- CSV flow -->
+    <div id="tab-csv" role="tabpanel">
+      <div class="rail" id="csv-rail" aria-hidden="true">
+        <div class="rail-step active" data-step="1"><div class="rail-pip"></div><div class="rail-label">Upload</div></div>
+        <div class="rail-step" data-step="2"><div class="rail-pip"></div><div class="rail-label">Map</div></div>
+        <div class="rail-step" data-step="3"><div class="rail-pip"></div><div class="rail-label">Preview</div></div>
+        <div class="rail-step" data-step="4"><div class="rail-pip"></div><div class="rail-label">Queue</div></div>
+      </div>
+
+      <div id="csv-step-upload">
+        <div class="dropzone" id="csv-dropzone" tabindex="0" role="button" aria-label="Upload contacts CSV">
+          <strong>Drop contacts CSV here</strong> or click to browse (max 5 MB)
+        </div>
+        <input type="file" id="csv-input" class="hidden" accept=".csv" aria-hidden="true" tabindex="-1">
+        <p class="count-caption mt hidden" id="csv-file-name"></p>
+      </div>
+
+      <div id="csv-step-map" class="hidden">
+        <div class="grid-4 mb">
+          <div>
+            <label for="csv-map-phone">Phone</label>
+            <select id="csv-map-phone"></select>
+          </div>
+          <div>
+            <label for="csv-map-name">Name used in message</label>
+            <select id="csv-map-name"></select>
+          </div>
+          <div>
+            <label for="csv-map-startup">Startup name</label>
+            <select id="csv-map-startup"></select>
+          </div>
+          <div>
+            <label for="csv-map-email">Email</label>
+            <select id="csv-map-email"></select>
+          </div>
+        </div>
+        <div class="field">
+          <span class="label" id="csv-extra-label">Other columns to keep for placeholders</span>
+          <div class="chips" id="csv-extra-columns" role="group" aria-labelledby="csv-extra-label"></div>
+        </div>
+      </div>
+
+      <div id="csv-step-preview" class="hidden">
+        <p id="csv-counts" class="mb"></p>
+        <div id="csv-valid-preview" class="mb"></div>
+        <div id="csv-invalid-preview" class="mb"></div>
+        <div class="row">
+          <button type="button" class="btn btn-primary" id="csv-commit-btn"></button>
+          <button type="button" class="btn" id="csv-reset-btn">Start over</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Manual add -->
+    <div id="tab-manual" class="hidden" role="tabpanel">
+      <form id="manual-form">
+        <div class="grid-2 mb">
+          <div>
+            <label for="manual-phone">Phone (with country code, e.g. +77012345678)</label>
+            <input type="text" id="manual-phone" autocomplete="off" class="mono">
+          </div>
+          <div>
+            <label for="manual-name">Name</label>
+            <input type="text" id="manual-name" autocomplete="off">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Add contact</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Status -->
+  <section class="card">
+    <h2 class="card-title">Status</h2>
+    <div class="tiles" id="status-tiles"></div>
+    <div class="row" id="status-actions"></div>
+  </section>
+
+  <!-- Contacts -->
+  <section class="card">
+    <h2 class="card-title">Contacts</h2>
+    <div class="field">
+      <span class="label" id="filter-label">Filter by status</span>
+      <div class="chips" id="status-filter" role="group" aria-labelledby="filter-label"></div>
+    </div>
+    <div class="row mb">
+      <button type="button" class="btn btn-sm" id="select-all-btn">Select all shown</button>
+      <button type="button" class="btn btn-sm" id="clear-selection-btn">Clear selection</button>
+      <span class="count-caption" id="selection-caption"></span>
+    </div>
+    <div id="contacts-table"></div>
+    <div class="row mt">
+      <button type="button" class="btn" id="retry-selected-btn">Retry selected failed</button>
+      <button type="button" class="btn btn-danger" id="delete-selected-btn">Delete selected</button>
+    </div>
+  </section>
+</div>
+{% else %}
+<div id="no-campaign" class="help">Create your first campaign to get started.</div>
+{% endif %}
+
+{% endblock %}

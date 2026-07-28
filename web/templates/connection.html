@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Connection — Silkroad Sender{% endblock %}
+{% block page %}connection{% endblock %}
+
+{% block content %}
+<h1>Connection</h1>
+
+<!-- Worker / WhatsApp status -->
+<section class="card">
+  <h2 class="card-title">WhatsApp status</h2>
+  <div id="conn-status">
+    <div class="block"><span class="dim">Checking worker status&hellip;</span></div>
+  </div>
+  <p class="count-caption mt hidden" id="worker-message"></p>
+</section>
+
+<!-- QR -->
+<section class="card hidden" id="qr-card">
+  <h2 class="card-title">Scan this QR code to connect WhatsApp</h2>
+  <div class="qr-box mb">
+    <img id="qr-img" src="" alt="WhatsApp pairing QR code">
+  </div>
+  <p class="card-caption" style="margin-top: 4px;">WhatsApp &rarr; Settings &rarr; Linked Devices &rarr; Link a Device</p>
+  <button type="button" class="btn" id="qr-refresh-btn">Refresh</button>
+</section>
+
+<!-- Test message -->
+<section class="card">
+  <h2 class="card-title">Send a test message</h2>
+  <p class="card-caption">
+    Queues a one-off message through a dedicated 'Test' program to verify the pipeline
+    end-to-end. The worker picks it up on its next poll, same as any other contact.
+  </p>
+  <form id="test-form">
+    <div class="grid-2 mb">
+      <div>
+        <label for="test-phone">Phone (with country code, e.g. +77012345678)</label>
+        <input type="text" id="test-phone" autocomplete="off" class="mono">
+      </div>
+      <div>
+        <label for="test-name">Name</label>
+        <input type="text" id="test-name" value="there" autocomplete="off">
+      </div>
+    </div>
+    <button type="submit" class="btn btn-primary">Queue test message</button>
+  </form>
+</section>
+{% endblock %}

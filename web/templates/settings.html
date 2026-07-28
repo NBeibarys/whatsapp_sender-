@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Settings — Silkroad Sender{% endblock %}
+{% block page %}settings{% endblock %}
+
+{% block content %}
+<h1>Settings</h1>
+
+<section class="card">
+  <h2 class="card-title">Sending mode <span id="live-badge" class="badge badge-warn hidden">LIVE SENDING</span></h2>
+  <label class="switch" for="set-dry-run">
+    <input type="checkbox" id="set-dry-run">
+    <span class="track" aria-hidden="true"></span>
+    <span class="switch-label">Dry run (log instead of actually sending)</span>
+  </label>
+  <p class="help mt">
+    Dry run ON means the worker only logs what it would send — safe for testing.
+    Switch it OFF to actually deliver WhatsApp messages.
+  </p>
+</section>
+
+<section class="card">
+  <h2 class="card-title">Pacing</h2>
+  <div class="grid-2 mb">
+    <div>
+      <label for="set-delay">Delay between sends (seconds)</label>
+      <input type="number" id="set-delay" min="0" step="1">
+    </div>
+    <div>
+      <label for="set-jitter">Random jitter added to delay (seconds)</label>
+      <input type="number" id="set-jitter" min="0" step="1">
+    </div>
+  </div>
+  <p class="count-caption" id="pacing-caption"></p>
+  <p class="help mt">
+    Jitter is a random extra wait added to each delay, making the pacing look human.
+    Recommended: 60s delay + 15s jitter to reduce the risk of WhatsApp blocking the number.
+  </p>
+</section>
+
+<section class="card">
+  <h2 class="card-title">Limits</h2>
+  <div class="field">
+    <label for="set-cap">Daily cap (max sends per day, across all campaigns — 0 means no limit)</label>
+    <input type="number" id="set-cap" min="0" step="1">
+  </div>
+</section>
+
+<button type="button" class="btn btn-primary" id="save-settings-btn">Save settings</button>
+
+<section class="card mt hidden" id="saved-card">
+  <h2 class="card-title">Saved</h2>
+  <dl class="kv" id="saved-summary"></dl>
+</section>
+{% endblock %}

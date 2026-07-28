@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Silkroad Sender{% endblock %}</title>
+  <link rel="stylesheet" href="/static/green-forge.css">
+</head>
+<body data-page="{% block page %}{% endblock %}">
+  {% set path = request.url.path %}
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div class="brand-name">Silkroad Sender</div>
+      </div>
+      <nav class="nav" aria-label="Main">
+        <a href="/campaigns" {% if path.startswith('/campaigns') or path == '/' %}class="active" aria-current="page"{% endif %}>Campaign</a>
+        <a href="/connection" {% if path.startswith('/connection') %}class="active" aria-current="page"{% endif %}>Connection</a>
+        <a href="/settings" {% if path.startswith('/settings') %}class="active" aria-current="page"{% endif %}>Settings</a>
+      </nav>
+      {% block sidebar %}{% endblock %}
+    </aside>
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <div id="toasts" class="toast-container" aria-live="polite" role="status"></div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div class="spinner" aria-hidden="true"></div>
+    <div id="overlay-text">Working&hellip;</div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
