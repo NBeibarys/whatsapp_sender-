@@ -1,11 +1,23 @@
 import os
 import subprocess
+import threading
+import time
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
+from app.config import DATA_DIR, PROJECT_ROOT
+
 WORKER_PID_PATH = os.path.join(DATA_DIR, "worker.pid")
 WORKER_LOG_PATH = os.path.join(DATA_DIR, "worker.log")
 WORKER_SCRIPT = os.path.join(PROJECT_ROOT, "worker", "index.js")
+
+# Spawn coordination: ensure_worker_running() is called from startup AND every
+# status poll — without a lock, overlapping calls could each Popen a worker,
+# and the workers would fight over the shared auth/ WhatsApp session.
+_spawn_lock = threading.Lock()
+# Backoff after a failed spawn so a crash-looping worker isn't respawned on
+# every 2s status poll.
+SPAWN_BACKOFF_SECONDS = 30
+_last_spawn_attempt = 0.0
+_last_spawn_error = ""
 
 
 def _cmdline_for_pid(pid):
@@ -49,32 +61,76 @@ def _find_existing_worker_pid():
 
 
 def ensure_worker_running():
+    global _last_spawn_attempt, _last_spawn_error
+
     os.makedirs(DATA_DIR, exist_ok=True)
 
+    # Fast path (lock-free, no sleep): status polls while the worker is
+    # healthy must not serialize or block.
     pid = _read_worker_pid()
     if pid and _is_worker_pid(pid):
         return True, f"WhatsApp worker running (PID {pid})."
 
-    pid = _find_existing_worker_pid()
-    if pid:
+    with _spawn_lock:
+        # Re-check under the lock — another caller may have spawned it while
+        # we were waiting.
+        pid = _read_worker_pid()
+        if pid and _is_worker_pid(pid):
+            return True, f"WhatsApp worker running (PID {pid})."
+
+        pid = _find_existing_worker_pid()
+        if pid:
+            with open(WORKER_PID_PATH, "w") as f:
+                f.write(str(pid))
+            return True, f"WhatsApp worker running (PID {pid})."
+
+        # Backoff: if a spawn attempt failed recently, don't retry yet.
+        elapsed = time.monotonic() - _last_spawn_attempt
+        if _last_spawn_error and elapsed < SPAWN_BACKOFF_SECONDS:
+            retry_in = max(1, int(SPAWN_BACKOFF_SECONDS - elapsed))
+            return False, (
+                f"worker failing to start; retrying in {retry_in}s; "
+                f"last error: {_last_spawn_error}"
+            )
+
+        _last_spawn_attempt = time.monotonic()
+        log = open(WORKER_LOG_PATH, "a", buffering=1)
+        try:
+            process = subprocess.Popen(
+                ["node", WORKER_SCRIPT],
+                cwd=PROJECT_ROOT,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            _last_spawn_error = f"Could not start WhatsApp worker: {exc}"
+            return False, _last_spawn_error
+        finally:
+            # The child inherited the fd; the parent's copy must not leak.
+            log.close()
+
         with open(WORKER_PID_PATH, "w") as f:
-            f.write(str(pid))
-        return True, f"WhatsApp worker running (PID {pid})."
+            f.write(str(process.pid))
 
-    log = open(WORKER_LOG_PATH, "a", buffering=1)
+        # Give the worker a moment to boot, then confirm it is actually alive
+        # (a bad node install/ABI mismatch makes it die instantly).
+        time.sleep(2)
+        if process.poll() is not None or not _is_worker_pid(process.pid):
+            _last_spawn_error = (
+                f"WhatsApp worker exited right after start (PID {process.pid}). "
+                f"Last log lines:\n{_tail_worker_log()}"
+            )
+            return False, _last_spawn_error
+
+        _last_spawn_error = ""
+        return True, f"WhatsApp worker started (PID {process.pid})."
+
+
+def _tail_worker_log(lines: int = 5) -> str:
     try:
-        process = subprocess.Popen(
-            ["node", WORKER_SCRIPT],
-            cwd=PROJECT_ROOT,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        log.close()
-        return False, f"Could not start WhatsApp worker: {exc}"
-
-    with open(WORKER_PID_PATH, "w") as f:
-        f.write(str(process.pid))
-    return True, f"WhatsApp worker started (PID {process.pid})."
+        with open(WORKER_LOG_PATH, "r", errors="ignore") as f:
+            return "".join(f.readlines()[-lines:]).strip() or "(worker log is empty)"
+    except OSError:
+        return "(worker log unavailable)"

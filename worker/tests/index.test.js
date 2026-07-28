@@ -39,6 +39,47 @@ test('processContact marks contact as failed (not crashed) when template field i
   cleanup();
 });
 
+test('processContact marks contact as failed (not stuck sending) on malformed extra_fields JSON', async () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const contactId = db
+    .prepare("INSERT INTO contacts (program_id, phone, name, extra_fields) VALUES (?, '+10000000004', 'Test', 'not-json{')")
+    .run(programId).lastInsertRowid;
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId);
+
+  await processContact(db, null, contact, { dry_run: 1, delay_seconds: 60, jitter_seconds: 0 });
+
+  const row = db.prepare('SELECT status, error_message FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(row.status, 'failed');
+  assert.ok(row.error_message, 'expected an error_message to be recorded');
+  cleanup();
+});
+
+test('processContact marks contact as failed (not stuck sending) when its program was deleted', async () => {
+  const { db, cleanup } = makeTestDb();
+  const programId = db
+    .prepare("INSERT INTO programs (name, template_text) VALUES ('A', 'Hi {{name}}')")
+    .run().lastInsertRowid;
+  const contactId = db
+    .prepare("INSERT INTO contacts (program_id, phone, name, extra_fields) VALUES (?, '+10000000005', 'Test', '{}')")
+    .run(programId).lastInsertRowid;
+  const contact = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId);
+
+  // Delete the program out from under the queued contact (FKs off so the
+  // contact row survives, mimicking a race between UI delete and the worker).
+  db.pragma('foreign_keys = OFF');
+  db.prepare('DELETE FROM programs WHERE id = ?').run(programId);
+
+  await processContact(db, null, contact, { dry_run: 1, delay_seconds: 60, jitter_seconds: 0 });
+
+  const row = db.prepare('SELECT status, error_message FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(row.status, 'failed');
+  assert.match(row.error_message, /no longer exists/);
+  cleanup();
+});
+
 test('processContact logs attachment filenames in dry_run mode when the program has attachments', async () => {
   const { db, cleanup } = makeTestDb();
   const programId = db

@@ -9,7 +9,7 @@ test('getSettings returns default settings row', () => {
   const settings = getSettings(db);
 
   assert.equal(settings.delay_seconds, 60);
-  assert.equal(settings.jitter_seconds, 0);
+  assert.equal(settings.jitter_seconds, 15);
   assert.equal(settings.dry_run, 1);
   cleanup();
 });

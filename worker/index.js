@@ -20,19 +20,29 @@ const DB_PATH = path.join(__dirname, '..', 'data', 'silkroad.db');
 const AUTH_DIR = path.join(__dirname, '..', 'auth');
 const SCHEMA_PATH = path.join(__dirname, '..', 'schema.sql');
 
+const IDLE_POLL_MS = 5000;
+const RECONNECT_RETRY_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 30000;
+const ERROR_RETRY_MS = 5000;
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function processContact(db, sock, contact, settings) {
   markSending(db, contact.id);
-  const extraFields = JSON.parse(contact.extra_fields || '{}');
-  const program = db
-    .prepare('SELECT template_text FROM programs WHERE id = ?')
-    .get(contact.program_id);
-  const attachments = getAttachments(db, contact.program_id);
 
   try {
+    // Inside the try: malformed extra_fields JSON or a deleted program must
+    // mark the contact failed, not leave it stuck in 'sending'.
+    const extraFields = JSON.parse(contact.extra_fields || '{}');
+    const program = db
+      .prepare('SELECT template_text FROM programs WHERE id = ?')
+      .get(contact.program_id);
+    if (!program) {
+      throw new Error(`Program ${contact.program_id} no longer exists`);
+    }
+    const attachments = getAttachments(db, contact.program_id);
     const message = renderTemplate(program.template_text, { name: contact.name, ...extraFields });
 
     if (settings.dry_run) {
@@ -69,55 +79,61 @@ async function runLoop(db) {
   let sock = null;
 
   while (true) {
-    updateHeartbeat(db);
+    try {
+      updateHeartbeat(db);
 
-    if (isDisconnectRequested(db)) {
-      clearDisconnectRequest(db);
-      if (sock) {
-        console.log('Disconnect requested from the app — logging out of WhatsApp.');
-        markDisconnected(db);
-        try {
-          await sock.logout();
-        } catch (err) {
-          console.error('Error during logout:', err.message);
+      if (isDisconnectRequested(db)) {
+        clearDisconnectRequest(db);
+        if (sock) {
+          console.log('Disconnect requested from the app — logging out of WhatsApp.');
+          markDisconnected(db);
+          try {
+            await sock.logout();
+          } catch (err) {
+            console.error('Error during logout:', err.message);
+          }
+          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+          console.log('Disconnected. Restarting to generate a fresh QR code.');
+          process.exit(0);
         }
-        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-        console.log('Disconnected. Restarting to generate a fresh QR code.');
-        process.exit(0);
       }
-    }
 
-    const settings = getSettings(db);
+      const settings = getSettings(db);
 
-    if (!settings.dry_run && !sock) {
-      console.log('dry_run turned off — connecting to WhatsApp...');
-      try {
-        sock = await connect(AUTH_DIR, db);
-        registerReplyListener(sock, db);
-        console.log('Connected to WhatsApp.');
-      } catch (err) {
-        console.error('Failed to connect to WhatsApp:', err.message);
-        await sleep(5000);
+      if (!settings.dry_run && !sock) {
+        console.log('dry_run turned off — connecting to WhatsApp...');
+        try {
+          sock = await connect(AUTH_DIR, db);
+          registerReplyListener(sock, db);
+          console.log('Connected to WhatsApp.');
+        } catch (err) {
+          console.error('Failed to connect to WhatsApp:', err.message);
+          await sleep(RECONNECT_RETRY_MS);
+          continue;
+        }
+      }
+
+      if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
+        await sleep(IDLE_POLL_MS);
         continue;
       }
-    }
 
-    if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
-      await sleep(5000);
+      const contact = getNextPendingContact(db);
+
+      if (!contact) {
+        await sleep(IDLE_POLL_MS);
+        continue;
+      }
+
+      await processContact(db, sock, contact, settings);
+
+      const jitter = settings.jitter_seconds > 0 ? Math.random() * settings.jitter_seconds : 0;
+      await sleep((settings.delay_seconds + jitter) * 1000);
+    } catch (err) {
+      console.error('Worker loop error:', err);
+      await sleep(ERROR_RETRY_MS);
       continue;
     }
-
-    const contact = getNextPendingContact(db);
-
-    if (!contact) {
-      await sleep(5000);
-      continue;
-    }
-
-    await processContact(db, sock, contact, settings);
-
-    const jitter = settings.jitter_seconds > 0 ? Math.random() * settings.jitter_seconds : 0;
-    await sleep((settings.delay_seconds + jitter) * 1000);
   }
 }
 
@@ -127,6 +143,16 @@ async function main() {
   db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
 
   updateHeartbeat(db);
+
+  // Keep the heartbeat fresh even while the send loop sleeps through long
+  // delays (the UI treats heartbeats older than 120s as a dead worker).
+  setInterval(() => {
+    try {
+      updateHeartbeat(db);
+    } catch (err) {
+      console.error('Heartbeat update failed:', err.message);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
 
   await runLoop(db);
 }

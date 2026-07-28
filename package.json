@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "node --test worker/tests/",
+    "test": "node --test \"worker/tests/*.test.js\"",
     "worker": "node worker/index.js"
   },
   "dependencies": {
