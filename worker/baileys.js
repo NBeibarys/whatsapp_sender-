@@ -95,6 +95,14 @@ async function connect(authDir, db) {
           );
           process.exit(1);
         }
+
+        // Post-login stream drop (network error, stream ack error, etc.).
+        // Flag the socket so the run loop discards it and reconnects with
+        // the persisted session — otherwise every send fails with
+        // "Connection Closed" until the worker is manually restarted.
+        markDisconnected(db);
+        sock.connectionLost = true;
+        console.error('WhatsApp connection lost — will reconnect.');
       }
     });
   });

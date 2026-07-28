@@ -100,6 +100,14 @@ async function runLoop(db) {
 
       const settings = getSettings(db);
 
+      if (sock && sock.connectionLost) {
+        console.log('Reconnecting after lost connection...');
+        try {
+          sock.end?.();
+        } catch {}
+        sock = null;
+      }
+
       if (!settings.dry_run && !sock) {
         console.log('dry_run turned off — connecting to WhatsApp...');
         try {
