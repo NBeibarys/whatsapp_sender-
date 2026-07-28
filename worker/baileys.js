@@ -20,6 +20,18 @@ async function connect(authDir, db) {
   let initialConnectionResolved = false;
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const settleResolve = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const settleReject = (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    };
+
     sock.ev.on('connection.update', (update) => {
       const { connection, lastDisconnect, qr } = update;
 
@@ -40,7 +52,7 @@ async function connect(authDir, db) {
         initialConnectionResolved = true;
         clearQrCode(db);
         markConnected(db);
-        resolve(sock);
+        settleResolve(sock);
         return;
       }
 
@@ -52,13 +64,24 @@ async function connect(authDir, db) {
           if (!shouldReconnect) {
             markDisconnected(db);
             fs.rmSync(authDir, { recursive: true, force: true });
-            reject(
+            settleReject(
               new Error(
                 'WhatsApp session was invalid (logged out before connecting). ' +
                   'Cleared the stale session; the next restart will show a fresh QR code.'
               )
             );
+            return;
           }
+          // Baileys closes the socket when QR attempts are exhausted (or on a
+          // network error) before login. Reject so the caller's retry loop can
+          // reconnect and generate a fresh QR — otherwise this Promise never
+          // settles and the worker hangs forever showing a stale QR.
+          clearQrCode(db);
+          settleReject(
+            new Error(
+              'Connection closed before login (QR expired or network error) — will retry with a fresh QR'
+            )
+          );
           return;
         }
 
