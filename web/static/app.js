@@ -189,7 +189,48 @@
       refreshPreview();
     });
 
-    // --- Preview ---
+    // --- Preview (WhatsApp chat mock) ---
+
+    var WA_TICKS_SVG = '<svg class="wa-ticks" viewBox="0 0 18 12" width="16" height="11"'
+      + ' fill="none" stroke="#8696a0" stroke-width="1.6" stroke-linecap="round"'
+      + ' stroke-linejoin="round" aria-hidden="true">'
+      + '<path d="M1.5 6.5 L4.5 9.5 L10.5 2.5"></path>'
+      + '<path d="M7.5 6.9 L10.1 9.5 L16.5 2.5"></path></svg>';
+
+    function waMetaRow() {
+      var now = new Date();
+      var time = String(now.getHours()).padStart(2, "0") + ":"
+        + String(now.getMinutes()).padStart(2, "0");
+      return '<span class="wa-meta">' + time + WA_TICKS_SVG + "</span>";
+    }
+
+    // Escape first, then tint any unresolved {{field}} tokens amber.
+    function waText(text) {
+      return esc(text).replace(/\{\{(\w+)\}\}/g, function (token) {
+        return '<span class="wa-token">' + token + "</span>";
+      });
+    }
+
+    function waAttachmentBody(a) {
+      if (a.media_type === "image") {
+        return '<img class="wa-img" src="/api/attachments/' + a.id
+          + '/file" alt="' + esc(a.file_name) + '">';
+      }
+      var ext = (a.file_name.split(".").pop() || "").toUpperCase();
+      if (ext === a.file_name.toUpperCase() || ext.length > 4) ext = "DOC";
+      return '<span class="wa-doc">'
+        + '<span class="wa-doc-icon">' + esc(ext) + "</span>"
+        + '<span class="wa-doc-text">'
+        + '<span class="wa-doc-name">' + esc(a.file_name) + "</span>"
+        + '<span class="wa-doc-sub">' + esc(ext) + " document</span>"
+        + "</span></span>";
+    }
+
+    function waBubble(inner, first) {
+      return '<div class="wa-bubble' + (first ? " wa-tail" : "") + '">'
+        + inner + waMetaRow() + "</div>";
+    }
+
     async function refreshPreview() {
       var preview = await fetchJSON("/api/campaigns/" + programId + "/preview");
       $("#preview-caption").textContent = preview.using_sample_values
@@ -203,17 +244,29 @@
       } else {
         missing.classList.add("hidden");
       }
-      $("#preview-message").textContent = preview.message;
-      var attachmentBox = $("#preview-attachments");
-      if (!preview.attachments.length) {
-        attachmentBox.innerHTML = "<div>Text-only WhatsApp message. No attachments will be sent.</div>";
+
+      var name = preview.preview_contact_name || "Recipient";
+      $("#wa-header-name").textContent = name;
+      var initials = name.trim().split(/\s+/).slice(0, 2).map(function (w) {
+        return w.charAt(0).toUpperCase();
+      }).join("");
+      $("#wa-avatar").textContent = preview.preview_contact_name ? initials : "?";
+
+      // Mirror real send semantics: first attachment carries the message
+      // text as its caption; further attachments are bare bubbles.
+      var bubbles = [];
+      var textHtml = preview.message
+        ? '<span class="wa-text">' + waText(preview.message) + "</span>"
+        : "";
+      if (preview.attachments.length) {
+        bubbles.push(waBubble(waAttachmentBody(preview.attachments[0]) + textHtml, true));
+        preview.attachments.slice(1).forEach(function (a) {
+          bubbles.push(waBubble(waAttachmentBody(a), false));
+        });
       } else {
-        attachmentBox.innerHTML = preview.attachments.map(function (a) {
-          var mediaType = a.media_type.charAt(0).toUpperCase() + a.media_type.slice(1);
-          return "<div>" + a.position + ". " + esc(mediaType) + ": " + esc(a.file_name)
-            + " (" + esc(a.caption_note) + ")</div>";
-        }).join("");
+        bubbles.push(waBubble(textHtml, true));
       }
+      $("#wa-chat").innerHTML = bubbles.join("");
     }
 
     // --- Attachments ---

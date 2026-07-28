@@ -623,23 +623,129 @@ input[type="checkbox"].cb:focus-visible { outline: none; box-shadow: 0 0 0 3px v
   margin: 0;
 }
 
-/* ---------- Message preview ---------- */
+/* ---------- Message preview: WhatsApp chat mock ----------
+   Intentionally WhatsApp-colored (it previews a WhatsApp chat).
+   Everything is scoped under .wa-preview — do not reuse these
+   colors in green-forge components. */
 
-.msg-preview {
-  background: #0b0e15;
+.wa-preview {
+  background: #0b141a;
+  /* Subtle CSS-only wallpaper texture (faint dot grid). */
+  background-image:
+    radial-gradient(rgba(233, 237, 239, .035) 1px, transparent 1.4px),
+    radial-gradient(rgba(233, 237, 239, .02) 1px, transparent 1.4px);
+  background-size: 22px 22px, 22px 22px;
+  background-position: 0 0, 11px 11px;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  padding: 13px 15px;
+  padding: 14px;
+  max-width: 420px;
 }
-.msg-preview pre {
-  margin: 0;
-  font: inherit;
+.wa-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px 10px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(134, 150, 160, .18);
+}
+.wa-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #33434e;
+  color: #cfd9de;
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+.wa-header-name { color: #e9edef; font-size: .92rem; font-weight: 600; line-height: 1.25; }
+.wa-header-sub { color: #8696a0; font-size: .74rem; line-height: 1.25; }
+.wa-chat { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.wa-bubble {
+  position: relative;
+  max-width: 85%;
+  background: #005c4b;
+  color: #e9edef;
+  border-radius: 8px;
+  padding: 6px 8px 8px;
+  font-size: 14.2px;
+  line-height: 1.4;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .25);
+}
+.wa-bubble.wa-tail { border-top-right-radius: 0; }
+.wa-bubble.wa-tail::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: -8px;
+  border: 8px solid transparent;
+  border-top-color: #005c4b;
+  border-left-color: #005c4b;
+  border-width: 0 8px 8px 0;
+}
+.wa-text {
+  display: block;
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--fg);
+  overflow-wrap: break-word;
+  padding-right: 4px;
 }
-.attach-context { margin-top: 10px; }
-.attach-context div { font-family: var(--mono); font-size: .8rem; color: var(--fg-faint); }
+.wa-img + .wa-text { margin-top: 5px; }
+.wa-token { color: #f2b134; background: rgba(242, 177, 52, .12); border-radius: 3px; }
+.wa-img {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.wa-doc {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 190px;
+  background: rgba(11, 20, 26, .28);
+  border-radius: 6px;
+  padding: 8px 9px;
+}
+.wa-doc-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: #7f66ff;
+  color: #fff;
+  font-size: .58rem;
+  font-weight: 700;
+  letter-spacing: .03em;
+}
+.wa-doc-text { min-width: 0; display: flex; flex-direction: column; }
+.wa-doc-name {
+  color: #e9edef;
+  font-size: .86rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-doc-sub { color: #8696a0; font-size: .72rem; }
+.wa-meta {
+  float: right;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin: 8px -2px 0 8px;
+  color: #8696a0;
+  font-size: .68rem;
+  line-height: 1;
+}
+.wa-ticks { display: inline-block; }
 
 /* ---------- Attachment rows ---------- */
 

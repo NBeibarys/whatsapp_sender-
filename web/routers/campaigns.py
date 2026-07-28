@@ -6,11 +6,13 @@ _sample_preview_fields / _attachment_context_lines semantics).
 """
 
 import json
+import mimetypes
 import os
 import re
 import sqlite3
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from app import db as appdb
@@ -107,6 +109,7 @@ def _attachment_entries(attachments: list[dict]) -> list[dict]:
     for index, attachment in enumerate(attachments, start=1):
         entries.append(
             {
+                "id": attachment["id"],
                 "position": index,
                 "media_type": attachment["media_type"],
                 "file_name": attachment["file_name"],
@@ -301,6 +304,29 @@ def list_campaign_attachments(program_id: int, conn: sqlite3.Connection = Depend
         {"id": a["id"], "file_name": a["file_name"], "media_type": a["media_type"]}
         for a in appdb.list_attachments(conn, program_id)
     ]
+
+
+@router.get("/api/attachments/{attachment_id}/file")
+def attachment_file(attachment_id: int, conn: sqlite3.Connection = Depends(get_db)):
+    """Serve attachment bytes for the WhatsApp-style preview mock.
+
+    Lookup is strictly by DB id; the stored path may be legacy-relative,
+    resolved the same way the worker does (app.db._resolve_media_path).
+    """
+    row = conn.execute(
+        "SELECT file_path, file_name FROM program_attachments WHERE id = ?",
+        (attachment_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    file_path = os.path.realpath(appdb._resolve_media_path(row[0]))
+    media_root = os.path.realpath(appdb.MEDIA_DIR)
+    if not file_path.startswith(media_root + os.sep):
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="Attachment file not found")
+    media_type = mimetypes.guess_type(row[1] or "")[0] or "application/octet-stream"
+    return FileResponse(file_path, media_type=media_type, filename=row[1])
 
 
 @router.delete("/api/attachments/{attachment_id}")

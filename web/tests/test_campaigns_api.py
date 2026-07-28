@@ -1,5 +1,6 @@
 import io
 import json
+import os
 
 
 def _create_campaign(client, name="Fall Cohort", template="Hi {{name}}"):
@@ -371,6 +372,52 @@ def test_attachments_upload_reject_and_delete(client, conn):
     assert resp.status_code == 404
 
 
+def test_attachment_file_served_back(client, conn):
+    program_id = _create_campaign(client)
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"fake-image-payload"
+    resp = client.post(
+        f"/api/campaigns/{program_id}/attachments",
+        files=[("files", ("logo.png", io.BytesIO(png_bytes), "image/png"))],
+    )
+    attachment_id = resp.json()["saved"][0]["id"]
+
+    resp = client.get(f"/api/attachments/{attachment_id}/file")
+    assert resp.status_code == 200
+    assert resp.content == png_bytes
+    assert resp.headers["content-type"].startswith("image/png")
+
+
+def test_attachment_file_404s(client, conn):
+    assert client.get("/api/attachments/9999/file").status_code == 404
+
+    # Row exists but file is gone from disk -> 404 too.
+    program_id = _create_campaign(client)
+    resp = client.post(
+        f"/api/campaigns/{program_id}/attachments",
+        files=[("files", ("gone.png", io.BytesIO(b"bytes"), "image/png"))],
+    )
+    attachment_id = resp.json()["saved"][0]["id"]
+    path = conn.execute(
+        "SELECT file_path FROM program_attachments WHERE id = ?", (attachment_id,)
+    ).fetchone()[0]
+    os.remove(path)
+    assert client.get(f"/api/attachments/{attachment_id}/file").status_code == 404
+
+
+def test_attachment_file_rejects_path_escaping_media_dir(client, conn):
+    # A tampered DB row pointing outside the media dir must 404, even if
+    # the target file exists on disk.
+    program_id = _create_campaign(client)
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO program_attachments (program_id, file_path, file_name, media_type) "
+            "VALUES (?, ?, ?, ?)",
+            (program_id, "../../etc/hostname", "hostname.png", "image"),
+        )
+        tampered_id = cur.lastrowid
+    assert client.get(f"/api/attachments/{tampered_id}/file").status_code == 404
+
+
 def test_attachment_upload_rejects_oversized_file(client, monkeypatch):
     monkeypatch.setattr("web.routers.campaigns.MAX_ATTACHMENT_BYTES", 16)
     program_id = _create_campaign(client)
@@ -422,6 +469,7 @@ def test_preview_attachment_caption_notes(client, conn):
         )
     resp = client.get(f"/api/campaigns/{program_id}/preview")
     attachments = resp.json()["attachments"]
+    assert all(isinstance(a["id"], int) for a in attachments)
     assert attachments[0]["position"] == 1
     assert "caption" in attachments[0]["caption_note"]
     assert attachments[1]["position"] == 2
