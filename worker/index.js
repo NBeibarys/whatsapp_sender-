@@ -3,18 +3,39 @@ const path = require('node:path');
 require('node:dns').setDefaultResultOrder('ipv4first');
 const { openDb } = require('./db');
 const { renderTemplate } = require('./template');
-const { updateHeartbeat, isDisconnectRequested, clearDisconnectRequest, markDisconnected } = require('./heartbeat');
 const {
+  updateHeartbeat,
+  isDisconnectRequested,
+  clearDisconnectRequest,
+  markDisconnected,
+  clearQrCode,
+} = require('./heartbeat');
+const {
+  ACK_TIMEOUT_MS,
   getSettings,
-  markSending,
+  markSendStarted,
+  markSendAttempted,
   markSent,
   markFailed,
   recoverStuckSends,
+  sweepAckTimeouts,
   getNextPendingContact,
   countSentToday,
   getAttachments,
+  isHalted,
+  getHalt,
 } = require('./queue');
-const { connect, registerReplyListener, checkOnWhatsApp, sendMessage, sendMediaMessage } = require('./baileys');
+const { applyMigrations } = require('./migrate');
+const { evaluateSendWindow } = require('./sendWindow');
+const { createAckTracker } = require('./ackHandler');
+const {
+  connect,
+  registerReplyListener,
+  registerAckListener,
+  checkOnWhatsApp,
+  sendMessage,
+  sendMediaMessage,
+} = require('./baileys');
 
 const DB_PATH = path.join(__dirname, '..', 'data', 'silkroad.db');
 const AUTH_DIR = path.join(__dirname, '..', 'auth');
@@ -22,15 +43,85 @@ const SCHEMA_PATH = path.join(__dirname, '..', 'schema.sql');
 
 const IDLE_POLL_MS = 5000;
 const RECONNECT_RETRY_MS = 5000;
+// WhatsApp answers repeated registration attempts from the same host with
+// 405 Connection Failure and gets stricter the harder you retry. Back off
+// exponentially instead of hammering it every 5s.
+const RECONNECT_MAX_RETRY_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 const ERROR_RETRY_MS = 5000;
+
+function reconnectDelayMs(consecutiveFailures) {
+  return Math.min(RECONNECT_RETRY_MS * 2 ** (consecutiveFailures - 1), RECONNECT_MAX_RETRY_MS);
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Sleep, but wake early once shouldWake() turns true.
+ *
+ * The reconnect backoff can grow to 5 minutes; without this an operator
+ * pressing Disconnect would sit there waiting out the whole sleep.
+ */
+async function sleepUntil(ms, shouldWake, stepMs = 1000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (shouldWake && shouldWake()) return true;
+    await sleep(Math.min(stepMs, deadline - Date.now()));
+  }
+  return Boolean(shouldWake && shouldWake());
+}
+
+/**
+ * Act on an operator disconnect request.
+ *
+ * The request flag is consumed ONLY here, where it is actually acted on.
+ * Clearing it before checking for a socket silently swallowed every
+ * disconnect requested while the worker was not connected — which is exactly
+ * the state it sits in during connection-failure backoff.
+ *
+ * With no socket there is nothing to log out of, but the operator's intent is
+ * the same: drop the session and come back with a fresh QR. So we still clear
+ * the stored session and exit cleanly for the supervisor to respawn.
+ */
+async function handleDisconnectRequest(db, sock, options = {}) {
+  if (!isDisconnectRequested(db)) return { acted: false };
+
+  const authDir = options.authDir || AUTH_DIR;
+  const log = options.log || console;
+  const exit = options.exit || ((code) => process.exit(code));
+  const removeAuth =
+    options.removeAuth || ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+
+  clearDisconnectRequest(db);
+  markDisconnected(db);
+  clearQrCode(db);
+
+  if (sock) {
+    log.log('Disconnect requested from the app — logging out of WhatsApp.');
+    try {
+      await sock.logout();
+    } catch (err) {
+      log.error('Error during logout:', err.message);
+    }
+  } else {
+    log.log(
+      'Disconnect requested from the app while not connected — clearing the stored session anyway.'
+    );
+  }
+
+  removeAuth(authDir);
+  log.log('Disconnected. Restarting to generate a fresh QR code.');
+  exit(0);
+  return { acted: true, hadSocket: Boolean(sock) };
+}
+
 async function processContact(db, sock, contact, settings) {
-  markSending(db, contact.id);
+  // Claim the row before anything can touch the socket: a crash mid-send then
+  // leaves status='sending' with no delivery_state, which startup recovery
+  // turns into needs_review instead of silently re-sending.
+  markSendStarted(db, contact.id);
 
   try {
     // Inside the try: malformed extra_fields JSON or a deleted program must
@@ -50,53 +141,67 @@ async function processContact(db, sock, contact, settings) {
         ? ` [with attachments: ${attachments.map((a) => a.file_name).join(', ')}]`
         : '';
       console.log(`[DRY RUN] Would send to ${contact.phone}: ${message}${attachmentNote}`);
+      markSent(db, contact.id, message);
+      return;
+    }
+
+    const exists = await checkOnWhatsApp(sock, contact.phone);
+    if (!exists) {
+      throw new Error('Number not registered on WhatsApp');
+    }
+
+    // sendMessage resolving only means the socket accepted the payload —
+    // WhatsApp can still refuse it (e.g. ack error 463 on a restricted
+    // account). Record the message id and wait for the ack instead of
+    // claiming success here.
+    let result;
+    if (attachments.length === 0) {
+      result = await sendMessage(sock, contact.phone, message);
     } else {
-      const exists = await checkOnWhatsApp(sock, contact.phone);
-      if (!exists) {
-        throw new Error('Number not registered on WhatsApp');
-      }
-      if (attachments.length === 0) {
-        await sendMessage(sock, contact.phone, message);
-      } else {
-        await sendMediaMessage(sock, contact.phone, attachments[0], message);
-        for (const attachment of attachments.slice(1)) {
-          await sendMediaMessage(sock, contact.phone, attachment, undefined);
-        }
+      result = await sendMediaMessage(sock, contact.phone, attachments[0], message);
+      for (const attachment of attachments.slice(1)) {
+        await sendMediaMessage(sock, contact.phone, attachment, undefined);
       }
     }
-    markSent(db, contact.id, message);
+
+    const waMessageId = result?.key?.id;
+    if (!waMessageId) {
+      console.warn(`No message id returned for ${contact.phone} — relying on the ack timeout.`);
+    }
+    markSendAttempted(db, contact.id, waMessageId, message);
   } catch (err) {
     markFailed(db, contact.id, err.message);
   }
 }
 
-async function runLoop(db) {
+async function runLoop(db, tracker = createAckTracker(db)) {
   const recovered = recoverStuckSends(db);
   if (recovered > 0) {
     console.log(`Marked ${recovered} interrupted send(s) as needs_review.`);
   }
 
   let sock = null;
+  let haltLogged = false;
+  let windowClosedLogged = null;
+  let connectFailures = 0;
 
   while (true) {
     try {
       updateHeartbeat(db);
 
-      if (isDisconnectRequested(db)) {
-        clearDisconnectRequest(db);
-        if (sock) {
-          console.log('Disconnect requested from the app — logging out of WhatsApp.');
-          markDisconnected(db);
-          try {
-            await sock.logout();
-          } catch (err) {
-            console.error('Error during logout:', err.message);
-          }
-          fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-          console.log('Disconnected. Restarting to generate a fresh QR code.');
-          process.exit(0);
-        }
+      // Acks arrive asynchronously; anything still unconfirmed after
+      // ACK_TIMEOUT_MS never made it and must stop looking "sent".
+      const timedOut = sweepAckTimeouts(db, ACK_TIMEOUT_MS);
+      if (timedOut.length > 0) {
+        console.error(
+          `No WhatsApp confirmation within ${ACK_TIMEOUT_MS / 1000}s for ${timedOut.length} ` +
+            `message(s): ${timedOut.map((row) => row.phone).join(', ')} — marked failed.`
+        );
+        tracker.registerTimeouts(timedOut.length);
       }
+
+      // Honoured whether or not a socket exists (see handleDisconnectRequest).
+      await handleDisconnectRequest(db, sock);
 
       const settings = getSettings(db);
 
@@ -113,13 +218,46 @@ async function runLoop(db) {
         try {
           sock = await connect(AUTH_DIR, db);
           registerReplyListener(sock, db);
+          registerAckListener(sock, db, tracker);
+          connectFailures = 0;
           console.log('Connected to WhatsApp.');
         } catch (err) {
-          console.error('Failed to connect to WhatsApp:', err.message);
-          await sleep(RECONNECT_RETRY_MS);
+          connectFailures += 1;
+          const wait = reconnectDelayMs(connectFailures);
+          console.error(
+            `Failed to connect to WhatsApp (attempt ${connectFailures}): ${err.message} — ` +
+              `retrying in ${Math.round(wait / 1000)}s.`
+          );
+          // Wake early if the operator asks to disconnect mid-backoff.
+          await sleepUntil(wait, () => isDisconnectRequested(db));
           continue;
         }
       }
+
+      // Halted: keep the loop (and the heartbeat, and the ack listeners)
+      // alive, but send nothing until the app clears the halt.
+      if (isHalted(db)) {
+        if (!haltLogged) {
+          console.error(`Sending is HALTED: ${getHalt(db).halt_reason}`);
+          haltLogged = true;
+        }
+        await sleep(IDLE_POLL_MS);
+        continue;
+      }
+      haltLogged = false;
+
+      // Outside the sending window: idle without touching the queue, so
+      // nothing is consumed or marked until the window opens again.
+      const sendWindow = evaluateSendWindow(settings);
+      if (!sendWindow.allowed) {
+        if (windowClosedLogged !== sendWindow.reason) {
+          console.log(sendWindow.reason);
+          windowClosedLogged = sendWindow.reason;
+        }
+        await sleep(IDLE_POLL_MS);
+        continue;
+      }
+      windowClosedLogged = null;
 
       if (settings.daily_cap !== null && countSentToday(db) >= settings.daily_cap) {
         await sleep(IDLE_POLL_MS);
@@ -149,6 +287,12 @@ async function main() {
   fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
   const db = openDb(DB_PATH);
   db.exec(fs.readFileSync(SCHEMA_PATH, 'utf8'));
+  // schema.sql only creates missing tables; existing databases need the
+  // additive columns added explicitly (mirrored in app/db.py).
+  const migrated = applyMigrations(db);
+  if (migrated.length > 0) {
+    console.log(`Applied schema migration: ${migrated.join(', ')}`);
+  }
 
   updateHeartbeat(db);
 
@@ -172,4 +316,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { processContact };
+module.exports = { processContact, runLoop, reconnectDelayMs, sleepUntil, handleDisconnectRequest };

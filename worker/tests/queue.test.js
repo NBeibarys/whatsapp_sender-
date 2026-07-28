@@ -279,3 +279,219 @@ test('getAttachments returns an empty array for a program with none', () => {
   assert.deepEqual(attachments, []);
   cleanup();
 });
+
+// --- Truthful send status: ack timeouts, recovery, replies ---
+
+const {
+  markSendAttempted,
+  sweepAckTimeouts,
+  recordReply,
+  ACK_TIMEOUT_MS,
+} = require('../queue');
+
+function seedContact(db, phone, name) {
+  const programId = db
+    .prepare('INSERT INTO programs (name, template_text) VALUES (?, ?)')
+    .run(name, 'Hi {{name}}').lastInsertRowid;
+  return db
+    .prepare('INSERT INTO contacts (program_id, phone, name, extra_fields) VALUES (?, ?, ?, ?)')
+    .run(programId, phone, name, '{}').lastInsertRowid;
+}
+
+test('recoverStuckSends does NOT clobber a fresh row that is awaiting an ack', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000010', 'Awaiting');
+  markSendAttempted(db, contactId, 'MSG-FRESH', 'Hi Awaiting');
+
+  const changed = recoverStuckSends(db);
+
+  const row = db.prepare('SELECT status, delivery_state FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(changed, 0);
+  assert.equal(row.status, 'sending');
+  assert.equal(row.delivery_state, 'pending_ack');
+  cleanup();
+});
+
+test('sweepAckTimeouts leaves a send that is still inside the ack window alone', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000011', 'Fresh');
+  markSendAttempted(db, contactId, 'MSG-FRESH', 'Hi Fresh');
+
+  const swept = sweepAckTimeouts(db, ACK_TIMEOUT_MS);
+
+  assert.equal(swept.length, 0);
+  assert.equal(db.prepare('SELECT status FROM contacts WHERE id = ?').get(contactId).status, 'sending');
+  cleanup();
+});
+
+test('sweepAckTimeouts fails a send that never got confirmed within the window', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000012', 'Stale');
+  markSendAttempted(db, contactId, 'MSG-STALE', 'Hi Stale');
+  // Backdate the attempt past the ack window.
+  db.prepare('UPDATE contacts SET sent_at = ? WHERE id = ?').run(
+    new Date(Date.now() - 5 * ACK_TIMEOUT_MS).toISOString(),
+    contactId
+  );
+
+  const swept = sweepAckTimeouts(db, ACK_TIMEOUT_MS);
+
+  const row = db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(swept.length, 1);
+  assert.equal(row.status, 'failed');
+  assert.equal(row.delivery_state, 'rejected');
+  assert.equal(row.ack_error, 'timeout');
+  assert.equal(row.error_message, 'No confirmation from WhatsApp within 60s.');
+  cleanup();
+});
+
+test('sweepAckTimeouts ignores contacts that already have a real delivery state', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000013', 'Delivered');
+  markSendAttempted(db, contactId, 'MSG-OK', 'Hi Delivered');
+  db.prepare(
+    "UPDATE contacts SET delivery_state = 'delivered', status = 'sent', sent_at = ? WHERE id = ?"
+  ).run(new Date(Date.now() - 5 * ACK_TIMEOUT_MS).toISOString(), contactId);
+
+  const swept = sweepAckTimeouts(db, ACK_TIMEOUT_MS);
+
+  assert.equal(swept.length, 0);
+  assert.equal(db.prepare('SELECT status FROM contacts WHERE id = ?').get(contactId).status, 'sent');
+  cleanup();
+});
+
+test('recordReply stores the body and links it to the contact we messaged', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000014', 'Replier');
+  db.prepare("UPDATE contacts SET status = 'sent', sent_at = ? WHERE id = ?").run(
+    new Date().toISOString(),
+    contactId
+  );
+
+  recordReply(db, '+10000000014', 'Yes, interested!');
+
+  const reply = db.prepare('SELECT * FROM replies').get();
+  assert.equal(reply.contact_id, contactId);
+  assert.equal(reply.phone, '+10000000014');
+  assert.equal(reply.body, 'Yes, interested!');
+  assert.ok(reply.received_at);
+  cleanup();
+});
+
+test('recordReply truncates very long bodies to 2000 chars', () => {
+  const { db, cleanup } = makeTestDb();
+  seedContact(db, '+10000000015', 'Chatty');
+
+  recordReply(db, '+10000000015', 'x'.repeat(5000));
+
+  assert.equal(db.prepare('SELECT body FROM replies').get().body.length, 2000);
+  cleanup();
+});
+
+test('recordReply keeps a reply from an unknown number (contact_id NULL)', () => {
+  const { db, cleanup } = makeTestDb();
+
+  recordReply(db, '+19999999999', 'who is this?');
+
+  const reply = db.prepare('SELECT * FROM replies').get();
+  assert.equal(reply.contact_id, null);
+  assert.equal(reply.body, 'who is this?');
+  cleanup();
+});
+
+// --- sent_at semantics + crash-during-send recovery (review fixes) ---
+
+const { markSendStarted, markServerAck, markDelivered, markRead } = require('../queue');
+
+test('sent_at is the attempt time and a later ack never moves it', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000020', 'Stable');
+
+  markSendStarted(db, contactId);
+  const attemptedAt = db.prepare('SELECT sent_at FROM contacts WHERE id = ?').get(contactId).sent_at;
+  markSendAttempted(db, contactId, 'MSG-STABLE', 'Hi Stable');
+  assert.equal(
+    db.prepare('SELECT sent_at FROM contacts WHERE id = ?').get(contactId).sent_at,
+    attemptedAt,
+    'recording the message id must not move sent_at'
+  );
+
+  markServerAck(db, contactId);
+  assert.equal(
+    db.prepare('SELECT sent_at FROM contacts WHERE id = ?').get(contactId).sent_at,
+    attemptedAt,
+    'the server ack must not move sent_at (it would shift the daily-cap bucket)'
+  );
+
+  markDelivered(db, contactId);
+  markRead(db, contactId);
+  const row = db.prepare('SELECT sent_at, delivered_at, read_at FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(row.sent_at, attemptedAt, 'receipts must not move sent_at either');
+  assert.ok(row.delivered_at && row.read_at);
+  cleanup();
+});
+
+test('an ack landing the next day does not move the send into that day (daily cap)', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000021', 'Yesterday');
+  markSendStarted(db, contactId);
+  markSendAttempted(db, contactId, 'MSG-YDAY', 'Hi');
+  // Backdate the attempt to yesterday, then let the ack arrive now.
+  const yesterday = new Date(Date.now() - 26 * 3600 * 1000).toISOString();
+  db.prepare('UPDATE contacts SET sent_at = ? WHERE id = ?').run(yesterday, contactId);
+
+  markServerAck(db, contactId);
+
+  const row = db.prepare('SELECT status, sent_at FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(row.status, 'sent');
+  assert.equal(row.sent_at, yesterday);
+  assert.equal(countSentToday(db), 0, "yesterday's send must not consume today's cap");
+  cleanup();
+});
+
+test('a crash between the socket call and recording leaves a recoverable row', () => {
+  const { db, cleanup } = makeTestDb();
+  const contactId = seedContact(db, '+10000000022', 'Crashed');
+
+  // markSendStarted ran, the socket call went out, then the process died
+  // before markSendAttempted — exactly the duplicate-send window.
+  markSendStarted(db, contactId);
+  const mid = db.prepare('SELECT status, delivery_state FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(mid.status, 'sending');
+  assert.equal(mid.delivery_state, null);
+  assert.equal(getNextPendingContact(db), undefined, 'a claimed row must not be picked up again');
+
+  // Restart:
+  const recovered = recoverStuckSends(db);
+
+  assert.equal(recovered, 1);
+  const row = db.prepare('SELECT status FROM contacts WHERE id = ?').get(contactId);
+  assert.equal(row.status, 'needs_review', 'the operator decides; it is never silently re-sent');
+  assert.equal(getNextPendingContact(db), undefined);
+  cleanup();
+});
+
+test('no row can be stranded: every in-flight row is either swept or recovered', () => {
+  const { db, cleanup } = makeTestDb();
+  const claimed = seedContact(db, '+10000000023', 'Claimed');
+  const awaiting = seedContact(db, '+10000000024', 'Awaiting');
+  markSendStarted(db, claimed);
+  markSendStarted(db, awaiting);
+  markSendAttempted(db, awaiting, 'MSG-AWAIT', 'Hi');
+  db.prepare('UPDATE contacts SET sent_at = ? WHERE id = ?').run(
+    new Date(Date.now() - 5 * ACK_TIMEOUT_MS).toISOString(),
+    awaiting
+  );
+
+  recoverStuckSends(db);
+  sweepAckTimeouts(db, ACK_TIMEOUT_MS);
+
+  assert.equal(db.prepare('SELECT status FROM contacts WHERE id = ?').get(claimed).status, 'needs_review');
+  assert.equal(db.prepare('SELECT status FROM contacts WHERE id = ?').get(awaiting).status, 'failed');
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM contacts WHERE status = 'sending'").get().n,
+    0,
+    'nothing may be left in sending'
+  );
+  cleanup();
+});

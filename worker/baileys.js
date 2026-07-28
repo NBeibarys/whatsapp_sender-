@@ -8,7 +8,7 @@ const {
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
 const { setQrCode, clearQrCode, updateHeartbeat, markConnected, markDisconnected } = require('./heartbeat');
-const { markReplied } = require('./queue');
+const { markReplied, recordReply } = require('./queue');
 
 async function connect(authDir, db) {
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -112,6 +112,13 @@ async function connect(authDir, db) {
   });
 }
 
+/** Extract readable text from an inbound message (media has no text body). */
+function replyBody(msg) {
+  const message = msg && msg.message;
+  if (!message) return '<media>';
+  return message.conversation || message.extendedTextMessage?.text || '<media>';
+}
+
 function registerReplyListener(sock, db) {
   sock.ev.on('messages.upsert', ({ messages }) => {
     for (const msg of messages) {
@@ -121,9 +128,26 @@ function registerReplyListener(sock, db) {
       const phone = `+${remoteJid.replace('@s.whatsapp.net', '')}`;
       try {
         markReplied(db, phone);
+        // Keep the actual text, not just the fact that they replied.
+        recordReply(db, phone, replyBody(msg));
       } catch (err) {
         console.error('Failed to record reply from', phone, err.message);
       }
+    }
+  });
+}
+
+/**
+ * Delivery truth. See worker/ackHandler.js for why 'messages.update' is the
+ * only event we need: it carries server/delivery/read receipts for 1:1 chats
+ * AND ack errors (status ERROR + messageStubParameters=[code]).
+ */
+function registerAckListener(sock, db, tracker) {
+  sock.ev.on('messages.update', (updates) => {
+    try {
+      tracker.handleUpdates(updates);
+    } catch (err) {
+      console.error('Failed to process message ack update:', err.message);
     }
   });
 }
@@ -133,9 +157,10 @@ async function checkOnWhatsApp(sock, phone) {
   return Boolean(result?.exists);
 }
 
+/** Returns the sent WAMessage so the caller can track its key.id. */
 async function sendMessage(sock, phone, text) {
   const jid = `${phone.replace('+', '')}@s.whatsapp.net`;
-  await sock.sendMessage(jid, { text });
+  return sock.sendMessage(jid, { text });
 }
 
 async function sendMediaMessage(sock, phone, attachment, caption) {
@@ -144,7 +169,15 @@ async function sendMediaMessage(sock, phone, attachment, caption) {
     attachment.media_type === 'image'
       ? { image: { url: attachment.file_path }, caption }
       : { document: { url: attachment.file_path }, fileName: attachment.file_name, caption };
-  await sock.sendMessage(jid, content);
+  return sock.sendMessage(jid, content);
 }
 
-module.exports = { connect, registerReplyListener, checkOnWhatsApp, sendMessage, sendMediaMessage };
+module.exports = {
+  connect,
+  registerReplyListener,
+  registerAckListener,
+  replyBody,
+  checkOnWhatsApp,
+  sendMessage,
+  sendMediaMessage,
+};

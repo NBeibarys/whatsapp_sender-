@@ -37,6 +37,9 @@ def conn(db_path):
 def client(db_path, tmp_path, monkeypatch):
     # Attachment uploads must land in a tmp dir, never the real media/.
     monkeypatch.setattr("app.db.MEDIA_DIR", str(tmp_path / "media"))
+    # The app's lifespan migrates the app DB on startup — point it at the tmp
+    # database so a test run never touches data/silkroad.db.
+    monkeypatch.setattr("app.db.APP_DB_PATH", db_path)
 
     def override_get_db():
         connection = get_connection(db_path)

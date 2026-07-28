@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.db import apply_migrations, get_app_connection
 from app.worker_supervisor import ensure_worker_running
 from web.routers import campaigns, connection, settings
 from web.templating import STATIC_DIR
@@ -20,6 +21,25 @@ logger = logging.getLogger("silkroad.web")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Either process may open the DB first; migrate here so the app is usable
+    # even when the worker never starts (mirrored in worker/index.js).
+    try:
+        conn = get_app_connection()
+        try:
+            applied = apply_migrations(conn)
+            if applied:
+                logger.info("Applied schema migration: %s", ", ".join(applied))
+        finally:
+            conn.close()
+    except Exception:
+        # Serving on a half-migrated schema hides the failure behind broken
+        # pages and wrong statuses — refuse to boot instead.
+        logger.exception(
+            "Schema migration at startup FAILED — refusing to serve on a possibly "
+            "incomplete schema. Fix the database (see data/silkroad.db) and restart."
+        )
+        raise
+
     if os.environ.get("SKIP_AUTO_WORKER") != "1":
         worker_ok, worker_message = ensure_worker_running()
         if worker_ok:

@@ -5,6 +5,7 @@ import uuid
 
 from app.config import DB_PATH as APP_DB_PATH
 from app.config import MEDIA_DIR, PROJECT_ROOT
+from app.send_window import DEFAULT_TIMEZONE
 
 TEST_PROGRAM_NAME = "Test"
 
@@ -25,7 +26,97 @@ def get_connection(db_path: str | None = None) -> sqlite3.Connection:
 
 def get_app_connection() -> sqlite3.Connection:
     os.makedirs(os.path.dirname(APP_DB_PATH), exist_ok=True)
-    return get_connection(APP_DB_PATH)
+    conn = get_connection(APP_DB_PATH)
+    apply_migrations(conn)
+    return conn
+
+
+# --- Additive schema migration (mirror of worker/migrate.js) ---
+#
+# Either process may open the DB first, so both sides can migrate it. Both are
+# additive-only (no table rebuild, no CHECK constraint change), so any order and
+# any number of runs is safe. Keep the column lists in the two files in sync.
+
+ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "contacts": {
+        "wa_message_id": "TEXT",
+        "delivery_state": "TEXT",
+        "ack_error": "TEXT",
+        "delivered_at": "TEXT",
+        "read_at": "TEXT",
+    },
+    "worker_heartbeat": {
+        "halted_at": "TEXT",
+        "halt_reason": "TEXT",
+    },
+    "settings": {
+        "send_window_start": "TEXT",
+        "send_window_end": "TEXT",
+        "send_timezone": "TEXT",
+    },
+}
+
+CREATED_TABLES: dict[str, str] = {
+    "replies": """
+        CREATE TABLE replies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contact_id INTEGER REFERENCES contacts(id),
+            phone TEXT NOT NULL,
+            body TEXT,
+            received_at TEXT NOT NULL
+        )
+    """,
+}
+
+CREATED_INDEXES: dict[str, str] = {
+    "idx_contacts_wa_message_id": (
+        "CREATE INDEX idx_contacts_wa_message_id ON contacts(wa_message_id)"
+    ),
+    "idx_replies_contact_id": "CREATE INDEX idx_replies_contact_id ON replies(contact_id)",
+}
+
+
+def _object_exists(conn: sqlite3.Connection, kind: str, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?", (kind, name)
+    ).fetchone()
+    return row is not None
+
+
+def apply_migrations(conn: sqlite3.Connection) -> list[str]:
+    """Bring an existing database up to the current schema. Returns what changed.
+
+    Cheap enough to call on every connection: the steady state is three
+    read-only lookups against sqlite_master / PRAGMA table_info.
+    """
+    applied: list[str] = []
+
+    for table, columns in ADDED_COLUMNS.items():
+        if not _object_exists(conn, "table", table):
+            continue  # schema.sql creates it complete
+        present = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        missing = [(c, t) for c, t in columns.items() if c not in present]
+        if missing:
+            with conn:
+                for column, column_type in missing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                    applied.append(f"{table}.{column}")
+
+    for table, sql in CREATED_TABLES.items():
+        if _object_exists(conn, "table", table):
+            continue
+        with conn:
+            conn.execute(sql)
+        applied.append(f"table {table}")
+
+    for name, sql in CREATED_INDEXES.items():
+        if _object_exists(conn, "index", name):
+            continue
+        with conn:
+            conn.execute(sql)
+        applied.append(f"index {name}")
+
+    return applied
 
 
 DEFAULT_DELAY_SECONDS = 60
@@ -41,21 +132,58 @@ def save_settings(
     delay_seconds: int,
     jitter_seconds: int,
     daily_cap: int | None,
+    send_window_start: str | None = None,
+    send_window_end: str | None = None,
+    send_timezone: str | None = None,
 ) -> None:
     cap_value = daily_cap if daily_cap and daily_cap > 0 else None
+    # Empty strings from the form mean "no window".
+    start = (send_window_start or "").strip() or None
+    end = (send_window_end or "").strip() or None
+    zone = (send_timezone or "").strip() or None
     with conn:
         conn.execute(
             """
-            INSERT INTO settings (id, dry_run, delay_seconds, jitter_seconds, daily_cap)
-            VALUES (1, ?, ?, ?, ?)
+            INSERT INTO settings (id, dry_run, delay_seconds, jitter_seconds, daily_cap,
+                                  send_window_start, send_window_end, send_timezone)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 dry_run = excluded.dry_run,
                 delay_seconds = excluded.delay_seconds,
                 jitter_seconds = excluded.jitter_seconds,
-                daily_cap = excluded.daily_cap
+                daily_cap = excluded.daily_cap,
+                send_window_start = excluded.send_window_start,
+                send_window_end = excluded.send_window_end,
+                send_timezone = excluded.send_timezone
             """,
-            (int(dry_run), delay_seconds, jitter_seconds, cap_value),
+            (int(dry_run), delay_seconds, jitter_seconds, cap_value, start, end, zone),
         )
+
+
+def get_full_settings(conn: sqlite3.Connection) -> dict:
+    """Every setting, including the sending window (get_settings stays a tuple
+    for its existing callers)."""
+    delay_seconds, jitter_seconds, daily_cap, dry_run = get_settings(conn)
+    row = conn.execute(
+        "SELECT send_window_start, send_window_end, send_timezone FROM settings WHERE id = 1"
+    ).fetchone()
+    start, end, zone = row if row is not None else (None, None, None)
+    return {
+        "dry_run": bool(dry_run),
+        "delay_seconds": delay_seconds,
+        "jitter_seconds": jitter_seconds,
+        "daily_cap": daily_cap,
+        "send_window_start": start,
+        "send_window_end": end,
+        "send_timezone": zone or DEFAULT_TIMEZONE,
+    }
+
+
+def count_sent_today(conn: sqlite3.Connection) -> int:
+    """Sends counted against the daily cap (same UTC-day rule as the worker)."""
+    return conn.execute(
+        "SELECT COUNT(*) FROM contacts WHERE status = 'sent' AND date(sent_at) = date('now')"
+    ).fetchone()[0]
 
 
 def get_settings(conn: sqlite3.Connection) -> tuple[int, int, int | None, int]:
@@ -229,6 +357,9 @@ def update_program_template(conn: sqlite3.Connection, program_id: int, template_
         )
 
 
+DELIVERY_STATES = ("pending_ack", "server_ack", "delivered", "read", "rejected")
+
+
 def get_status_counts(conn: sqlite3.Connection, program_id: int) -> dict:
     counts = dict(
         conn.execute(
@@ -240,35 +371,85 @@ def get_status_counts(conn: sqlite3.Connection, program_id: int) -> dict:
         "SELECT COUNT(*) FROM contacts WHERE program_id = ? AND replied_at IS NOT NULL",
         (program_id,),
     ).fetchone()[0]
+    delivery = dict(
+        conn.execute(
+            "SELECT delivery_state, COUNT(*) FROM contacts "
+            "WHERE program_id = ? AND delivery_state IS NOT NULL GROUP BY delivery_state",
+            (program_id,),
+        ).fetchall()
+    )
+    delivery_counts = {
+        state: delivery.get(state, 0)
+        for state in DELIVERY_STATES
+    }
+    # The plain-language text the worker stored for the most recent rejection,
+    # so the UI never has to show a bare error number.
+    rejection = conn.execute(
+        "SELECT error_message FROM contacts "
+        "WHERE program_id = ? AND delivery_state = 'rejected' AND error_message IS NOT NULL "
+        "ORDER BY sent_at DESC, id DESC LIMIT 1",
+        (program_id,),
+    ).fetchone()
     return {
         "counts": {
             status: counts.get(status, 0)
             for status in ("pending", "sending", "sent", "failed", "needs_review")
         },
         "replied_count": replied_count,
+        "delivery_counts": delivery_counts,
+        # "Delivered" tile: reached the phone (read implies delivered).
+        "delivered_count": delivery_counts["delivered"] + delivery_counts["read"],
+        "rejected_count": delivery_counts["rejected"],
+        "rejection_reason": rejection[0] if rejection else None,
     }
 
 
+CONTACT_COLUMNS = (
+    "id",
+    "phone",
+    "name",
+    "status",
+    "sent_at",
+    "replied_at",
+    "error_message",
+    "wa_message_id",
+    "delivery_state",
+    "ack_error",
+    "delivered_at",
+    "read_at",
+)
+
+
 def list_contacts(conn: sqlite3.Connection, program_id: int, status: str | None = None) -> list[dict]:
-    query = (
-        "SELECT id, phone, name, status, sent_at, replied_at, error_message FROM contacts "
-        "WHERE program_id = ?"
-    )
+    query = f"SELECT {', '.join(CONTACT_COLUMNS)} FROM contacts WHERE program_id = ?"
     params: list = [program_id]
     if status is not None:
         query += " AND status = ?"
         params.append(status)
     query += " ORDER BY status, id"
     rows = conn.execute(query, params).fetchall()
+    return [dict(zip(CONTACT_COLUMNS, row)) for row in rows]
+
+
+def list_replies(conn: sqlite3.Connection, program_id: int) -> list[dict]:
+    """Replies from contacts of this campaign, newest first."""
+    rows = conn.execute(
+        """
+        SELECT r.contact_id, c.name, r.phone, r.body, r.received_at
+        FROM replies r
+        JOIN contacts c ON c.id = r.contact_id
+        WHERE c.program_id = ?
+        ORDER BY r.received_at DESC, r.id DESC
+        """,
+        (program_id,),
+    ).fetchall()
     return [
         {
-            "id": r[0],
-            "phone": r[1],
-            "name": r[2],
-            "status": r[3],
-            "sent_at": r[4],
-            "replied_at": r[5],
-            "error_message": r[6],
+            "contact_id": r[0],
+            "name": r[1],
+            "phone": r[2],
+            "body": r[3],
+            "received_at": r[4],
         }
         for r in rows
     ]
@@ -282,10 +463,18 @@ def get_first_contact(conn: sqlite3.Connection, program_id: int):
     ).fetchone()
 
 
+# Re-queueing must also wipe the delivery trail, otherwise a retried contact
+# still shows the old rejection.
+_RESET_DELIVERY = (
+    "status = 'pending', error_message = NULL, delivery_state = NULL, "
+    "ack_error = NULL, wa_message_id = NULL, delivered_at = NULL, read_at = NULL"
+)
+
+
 def retry_failed_contacts(conn: sqlite3.Connection, program_id: int) -> int:
     with conn:
         result = conn.execute(
-            "UPDATE contacts SET status = 'pending', error_message = NULL "
+            f"UPDATE contacts SET {_RESET_DELIVERY} "
             "WHERE program_id = ? AND status = 'failed'",
             (program_id,),
         )
@@ -297,8 +486,7 @@ def retry_contacts_by_ids(conn: sqlite3.Connection, contact_ids: list[int]) -> i
     with conn:
         for contact_id in contact_ids:
             result = conn.execute(
-                "UPDATE contacts SET status = 'pending', error_message = NULL "
-                "WHERE id = ? AND status = 'failed'",
+                f"UPDATE contacts SET {_RESET_DELIVERY} WHERE id = ? AND status = 'failed'",
                 (contact_id,),
             )
             retried += result.rowcount
@@ -317,7 +505,7 @@ def resolve_needs_review(conn: sqlite3.Connection, program_id: int, to_status: s
             )
         else:
             result = conn.execute(
-                "UPDATE contacts SET status = 'pending', error_message = NULL "
+                f"UPDATE contacts SET {_RESET_DELIVERY} "
                 "WHERE program_id = ? AND status = 'needs_review'",
                 (program_id,),
             )
@@ -326,17 +514,40 @@ def resolve_needs_review(conn: sqlite3.Connection, program_id: int, to_status: s
 
 def get_heartbeat(conn: sqlite3.Connection) -> dict:
     row = conn.execute(
-        "SELECT last_seen, qr_code, connected, disconnect_requested "
+        "SELECT last_seen, qr_code, connected, disconnect_requested, halted_at, halt_reason "
         "FROM worker_heartbeat WHERE id = 1"
     ).fetchone()
     if row is None:
-        return {"last_seen": None, "qr_code": None, "connected": False, "disconnect_requested": False}
+        return {
+            "last_seen": None,
+            "qr_code": None,
+            "connected": False,
+            "disconnect_requested": False,
+            "halted": False,
+            "halted_at": None,
+            "halt_reason": None,
+        }
     return {
         "last_seen": row[0],
         "qr_code": row[1],
         "connected": bool(row[2]),
         "disconnect_requested": bool(row[3]),
+        "halted": row[4] is not None,
+        "halted_at": row[4],
+        "halt_reason": row[5],
     }
+
+
+def clear_halt(conn: sqlite3.Connection) -> None:
+    """Let the worker send again.
+
+    Deliberately leaves programs paused: the worker paused them for a reason,
+    so the operator re-starts the campaign they actually want.
+    """
+    with conn:
+        conn.execute(
+            "UPDATE worker_heartbeat SET halted_at = NULL, halt_reason = NULL WHERE id = 1"
+        )
 
 
 def clear_qr_code(conn: sqlite3.Connection) -> None:
