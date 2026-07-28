@@ -86,14 +86,18 @@ async function connect(authDir, db) {
         }
 
         if (!shouldReconnect) {
+          // The linked device was removed (user unlinked it, or WhatsApp did).
+          // The persisted creds are dead: keeping them would only produce a
+          // doomed reconnect loop, so wipe them and exit cleanly (0) — the
+          // supervisor respawns us and the fresh start goes straight to a QR.
           markDisconnected(db);
+          clearQrCode(db);
           console.error(
-            'WhatsApp session was logged out after a successful connection. ' +
-              'The worker will now exit; pm2 will restart it, which will require ' +
-              'a fresh QR scan (delete the auth/ directory and re-run to get a new QR code, ' +
-              'or check pm2 logs for the QR code on the next restart attempt).'
+            'WhatsApp device was unlinked (logged out). ' +
+              'Clearing the stale session so a fresh QR can be generated.'
           );
-          process.exit(1);
+          fs.rmSync(authDir, { recursive: true, force: true });
+          process.exit(0);
         }
 
         // Post-login stream drop (network error, stream ack error, etc.).

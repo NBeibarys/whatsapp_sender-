@@ -117,7 +117,19 @@ def ensure_worker_running():
         # Give the worker a moment to boot, then confirm it is actually alive
         # (a bad node install/ABI mismatch makes it die instantly).
         time.sleep(2)
-        if process.poll() is not None or not _is_worker_pid(process.pid):
+        returncode = process.poll()
+        if returncode == 0:
+            # A clean exit is a restart request, not a failure: the worker exits
+            # 0 after clearing a dead WhatsApp session (device unlinked) or after
+            # an app-requested disconnect. Must NOT arm the failure backoff —
+            # the next status poll has to respawn it immediately so a fresh QR
+            # appears instead of sending staying halted for 30s+.
+            _last_spawn_error = ""
+            return False, (
+                "WhatsApp worker exited cleanly (session cleared); "
+                "restarting it on the next check."
+            )
+        if returncode is not None or not _is_worker_pid(process.pid):
             _last_spawn_error = (
                 f"WhatsApp worker exited right after start (PID {process.pid}). "
                 f"Last log lines:\n{_tail_worker_log()}"

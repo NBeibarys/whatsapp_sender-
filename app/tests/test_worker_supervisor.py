@@ -17,6 +17,16 @@ class DeadProcess:
         return 1
 
 
+class CleanExitProcess:
+    """Fake Popen result that exits 0 (worker cleared a dead session)."""
+
+    def __init__(self):
+        self.pid = 999998
+
+    def poll(self):
+        return 0
+
+
 @pytest.fixture
 def supervisor(tmp_path, monkeypatch):
     monkeypatch.setattr(ws, "DATA_DIR", str(tmp_path))
@@ -73,6 +83,26 @@ def test_spawn_retried_after_backoff_expires(supervisor):
     # Pretend the failed attempt happened long ago.
     ws._last_spawn_attempt = time.monotonic() - (ws.SPAWN_BACKOFF_SECONDS + 1)
     ws.ensure_worker_running()
+    assert len(supervisor) == 2
+
+
+def test_clean_exit_is_respawned_immediately(supervisor, monkeypatch):
+    """exit(0) means 'restart me' (unlinked device / requested disconnect).
+
+    It must not arm the failure backoff, or sending stays halted for 30s+
+    even though a fresh QR is one respawn away.
+    """
+    monkeypatch.setattr(ws.subprocess, "Popen", lambda *a, **k: (
+        supervisor.append(a), CleanExitProcess())[1])
+
+    ok_first, message = ws.ensure_worker_running()
+    assert ok_first is False
+    assert "exited cleanly" in message
+    assert ws._last_spawn_error == ""  # backoff not armed
+
+    # Next status poll (no waiting) spawns it again.
+    ok_second, _ = ws.ensure_worker_running()
+    assert ok_second is False
     assert len(supervisor) == 2
 
 
