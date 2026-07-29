@@ -54,6 +54,32 @@ function reconnectDelayMs(consecutiveFailures) {
   return Math.min(RECONNECT_RETRY_MS * 2 ** (consecutiveFailures - 1), RECONNECT_MAX_RETRY_MS);
 }
 
+/**
+ * Pick the retry policy for a failed connect().
+ *
+ * An unscanned QR is not a failure of ours. Baileys rotates through a fixed
+ * number of codes (~2 minutes) and then closes the socket; if we treat that
+ * like a refused connection, the backoff climbs to 5 minutes and the operator
+ * stares at a QR-less page for most of every cycle. So: come straight back with
+ * a fresh code, and drop the failure count — a QR is proof WhatsApp is still
+ * willing to talk to us.
+ *
+ * A close with no QR at all is the 405 registration refusal, which gets worse
+ * the harder you retry. That one keeps the exponential backoff.
+ */
+function connectRetryPolicy(err, consecutiveFailures) {
+  if (err && err.restartRequired) {
+    // The scan succeeded and Baileys wants the reconnect that completes login.
+    // Making the operator wait for that would be absurd.
+    return { failures: 0, waitMs: 0, qrExpired: false, pairingRestart: true };
+  }
+  if (err && err.qrEmitted) {
+    return { failures: 0, waitMs: RECONNECT_RETRY_MS, qrExpired: true };
+  }
+  const failures = consecutiveFailures + 1;
+  return { failures, waitMs: reconnectDelayMs(failures), qrExpired: false };
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -222,14 +248,22 @@ async function runLoop(db, tracker = createAckTracker(db)) {
           connectFailures = 0;
           console.log('Connected to WhatsApp.');
         } catch (err) {
-          connectFailures += 1;
-          const wait = reconnectDelayMs(connectFailures);
-          console.error(
-            `Failed to connect to WhatsApp (attempt ${connectFailures}): ${err.message} — ` +
-              `retrying in ${Math.round(wait / 1000)}s.`
-          );
+          const policy = connectRetryPolicy(err, connectFailures);
+          connectFailures = policy.failures;
+          if (policy.pairingRestart) {
+            console.log(`${err.message} — reconnecting now to finish logging in.`);
+          } else if (policy.qrExpired) {
+            console.log(
+              `${err.message} — generating a fresh QR in ${Math.round(policy.waitMs / 1000)}s.`
+            );
+          } else {
+            console.error(
+              `Failed to connect to WhatsApp (attempt ${connectFailures}): ${err.message} — ` +
+                `retrying in ${Math.round(policy.waitMs / 1000)}s.`
+            );
+          }
           // Wake early if the operator asks to disconnect mid-backoff.
-          await sleepUntil(wait, () => isDisconnectRequested(db));
+          await sleepUntil(policy.waitMs, () => isDisconnectRequested(db));
           continue;
         }
       }
@@ -316,4 +350,11 @@ if (require.main === module) {
   });
 }
 
-module.exports = { processContact, runLoop, reconnectDelayMs, sleepUntil, handleDisconnectRequest };
+module.exports = {
+  processContact,
+  runLoop,
+  reconnectDelayMs,
+  connectRetryPolicy,
+  sleepUntil,
+  handleDisconnectRequest,
+};

@@ -17,8 +17,14 @@
 <!-- QR -->
 <section class="card hidden" id="qr-card">
   <h2 class="card-title">Scan this QR code to connect WhatsApp</h2>
-  <div class="qr-box mb">
+  <div class="qr-box mb" id="qr-box">
     <img id="qr-img" src="" alt="WhatsApp pairing QR code">
+  </div>
+  <!-- Shown for the few seconds between one code expiring and the next arriving,
+       so the page never goes blank and no dead code is left looking scannable. -->
+  <div class="qr-box qr-box-pending mb hidden" id="qr-pending">
+    <div class="spinner"></div>
+    <p class="card-caption">Generating a fresh QR code&hellip;</p>
   </div>
   <p class="card-caption" style="margin-top: 4px;">WhatsApp &rarr; Settings &rarr; Linked Devices &rarr; Link a Device</p>
   <button type="button" class="btn" id="qr-refresh-btn">Refresh</button>

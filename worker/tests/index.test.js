@@ -169,6 +169,86 @@ test('reconnect backoff grows exponentially and is capped', () => {
   assert.equal(reconnectDelayMs(50), 300000, 'stays capped');
 });
 
+const { connectRetryPolicy } = require('../index');
+const { preLoginCloseError } = require('../baileys');
+
+test('an unscanned QR retries fast, so a fresh code is always seconds away', () => {
+  // The operator is looking at the page right now: 5s, not a 5-minute backoff.
+  const policy = connectRetryPolicy(preLoginCloseError(true), 0);
+
+  assert.equal(policy.qrExpired, true);
+  assert.equal(policy.waitMs, 5000);
+});
+
+test('QR expiry never grows the backoff counter, however many codes go unscanned', () => {
+  // Baileys rotates through ~6 codes every couple of minutes. Before the fix
+  // each cycle counted as a failure, so the wait climbed 5s → 300s and the
+  // page sat QR-less for most of every cycle.
+  let failures = 0;
+  for (let cycle = 0; cycle < 20; cycle += 1) {
+    const policy = connectRetryPolicy(preLoginCloseError(true), failures);
+    failures = policy.failures;
+    assert.equal(policy.waitMs, 5000, `cycle ${cycle} must still retry fast`);
+  }
+  assert.equal(failures, 0, 'unscanned codes are not connection failures');
+});
+
+test('a QR clears backoff earned by earlier refusals — WhatsApp is talking to us again', () => {
+  const policy = connectRetryPolicy(preLoginCloseError(true), 6);
+
+  assert.equal(policy.failures, 0);
+  assert.equal(policy.waitMs, 5000);
+
+  // And the escalation restarts from the bottom, exactly as after a success
+  // (runLoop zeroes the same counter when connect() resolves).
+  assert.equal(connectRetryPolicy(preLoginCloseError(false), policy.failures).waitMs, 5000);
+});
+
+test('a close with no QR keeps backing off exponentially (the 405 refusal case)', () => {
+  // Hammering the registration endpoint is what deepens a block.
+  let failures = 0;
+  const waits = [];
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const policy = connectRetryPolicy(preLoginCloseError(false), failures);
+    failures = policy.failures;
+    waits.push(policy.waitMs);
+    assert.equal(policy.qrExpired, false);
+  }
+
+  assert.deepEqual(waits, [5000, 10000, 20000, 40000]);
+  assert.equal(failures, 4);
+});
+
+test('non-QR connect errors (network, logged out) also back off', () => {
+  const policy = connectRetryPolicy(new Error('getaddrinfo ENOTFOUND'), 2);
+
+  assert.equal(policy.qrExpired, false);
+  assert.equal(policy.failures, 3);
+  assert.equal(policy.waitMs, 20000);
+});
+
+test('a successful scan reconnects immediately instead of waiting', () => {
+  // Baileys pairs, then closes with restartRequired to log in with the new
+  // creds. Making the operator who just scanned wait 5s would be absurd.
+  const policy = connectRetryPolicy(preLoginCloseError(true, true), 3);
+
+  assert.equal(policy.pairingRestart, true);
+  assert.equal(policy.waitMs, 0);
+  assert.equal(policy.failures, 0);
+  assert.equal(policy.qrExpired, false, 'a scanned code did not expire');
+});
+
+test('the pre-login error carries the flags the retry policy keys on', () => {
+  // Contract between baileys.js and index.js: renaming these breaks fast retry.
+  assert.equal(preLoginCloseError(true).qrEmitted, true);
+  assert.equal(preLoginCloseError(false).qrEmitted, false);
+  assert.equal(preLoginCloseError(true).restartRequired, false);
+  assert.equal(preLoginCloseError(true, true).restartRequired, true);
+  assert.match(preLoginCloseError(true).message, /QR code expired/);
+  assert.match(preLoginCloseError(false).message, /before any QR code was issued/);
+  assert.match(preLoginCloseError(true, true).message, /accepted the pairing/);
+});
+
 const { sleepUntil, handleDisconnectRequest } = require('../index');
 const { requestDisconnect, isDisconnectRequested, setQrCode } = require('../heartbeat');
 

@@ -1167,24 +1167,55 @@
 
     function renderQR(status) {
       var card = $("#qr-card");
+      var box = $("#qr-box");
+      var pending = $("#qr-pending");
+
       if (status.qr_data_url) {
         if (status.qr_data_url !== lastQR) {
           $("#qr-img").src = status.qr_data_url;
           lastQR = status.qr_data_url;
         }
         card.classList.remove("hidden");
+        box.classList.remove("hidden");
+        pending.classList.add("hidden");
         waitingForQR = false;
         hideOverlay();
-      } else {
+        return;
+      }
+
+      if (status.connected) {
         card.classList.add("hidden");
         lastQR = null;
-      }
-      if (status.connected) {
         waitingForQR = false;
         hideOverlay();
+        return;
       }
-      if ((waitingForQR || status.disconnect_requested) && !status.qr_data_url && !status.connected) {
+
+      // A code we were showing has gone. WhatsApp only issues a handful per
+      // connection, so the worker reconnects for a fresh batch every couple of
+      // minutes — a gap of seconds, not a reason to blank the page.
+      if (lastQR) {
+        waitingForQR = true;
+        lastQR = null;
+      }
+
+      // A code is genuinely on its way whenever the worker is alive and not
+      // linked — after one expires, after an operator Disconnect, or on a page
+      // load that lands in one of those gaps. Only a dead worker gets nothing.
+      if (waitingForQR || status.disconnect_requested || status.worker_alive) {
+        card.classList.remove("hidden");
+        box.classList.add("hidden");
+        pending.classList.remove("hidden");
+      } else {
+        card.classList.add("hidden");
+      }
+
+      // The blocking overlay is for the operator's own Disconnect (they asked
+      // for it and are waiting); routine code rotation stays inline.
+      if (status.disconnect_requested) {
         showOverlay("Preparing fresh QR code…");
+      } else {
+        hideOverlay();
       }
     }
 

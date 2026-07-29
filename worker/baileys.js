@@ -10,14 +10,44 @@ const QRCode = require('qrcode');
 const { setQrCode, clearQrCode, updateHeartbeat, markConnected, markDisconnected } = require('./heartbeat');
 const { markReplied, recordReply } = require('./queue');
 
+/**
+ * The socket closed before login. The flags are the whole point of this error:
+ * they tell the caller which of three very different things happened, and
+ * therefore how fast to reconnect (see connectRetryPolicy in worker/index.js).
+ */
+function preLoginCloseError(qrEmitted, restartRequired = false) {
+  let message;
+  if (restartRequired) {
+    message = 'WhatsApp accepted the pairing and asked us to reconnect';
+  } else if (qrEmitted) {
+    message = 'QR code expired without being scanned';
+  } else {
+    message =
+      'Connection closed before login and before any QR code was issued ' +
+      '(WhatsApp refused the connection)';
+  }
+  const err = new Error(message);
+  err.qrEmitted = qrEmitted;
+  err.restartRequired = restartRequired;
+  return err;
+}
+
 async function connect(authDir, db) {
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const { version, isLatest } = await fetchLatestBaileysVersion();
   console.log(`Using WhatsApp Web protocol version ${version.join('.')}, isLatest: ${isLatest}`);
+  // Deliberately no qrTimeout override. Baileys supports it, but WhatsApp hands
+  // over all ~6 pairing refs in a single stanza and Baileys just paces them
+  // (60s for the first, 20s each after). Stretching that would keep showing a
+  // ref long after the server issued it — a code that scans to an error. The
+  // fresh-QR guarantee comes from reconnecting fast instead (see index.js).
   const sock = makeWASocket({ auth: state, version });
   sock.ev.on('creds.update', saveCreds);
 
   let initialConnectionResolved = false;
+  // Did WhatsApp actually hand us a pairing code this attempt? It decides the
+  // caller's retry policy (see the pre-login close branch below).
+  let qrEmitted = false;
 
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -36,6 +66,7 @@ async function connect(authDir, db) {
       const { connection, lastDisconnect, qr } = update;
 
       if (qr) {
+        qrEmitted = true;
         console.log('Scan this QR code with WhatsApp (Linked Devices):');
         qrcodeTerminal.generate(qr, { small: true });
         updateHeartbeat(db);
@@ -76,12 +107,24 @@ async function connect(authDir, db) {
           // network error) before login. Reject so the caller's retry loop can
           // reconnect and generate a fresh QR — otherwise this Promise never
           // settles and the worker hangs forever showing a stale QR.
+          //
+          // Two very different failures land here and they need OPPOSITE retry
+          // policies, so tell them apart on the error:
+          //   qrEmitted true  — codes were shown and simply went unscanned. The
+          //     operator is probably staring at the screen; reconnect at once.
+          //   qrEmitted false — WhatsApp refused the connection before issuing
+          //     any code (the 405 registration case). Hammering that is what
+          //     deepens the block, so the caller backs off exponentially.
+          //   restartRequired — the scan WORKED; Baileys pairs, then asks for a
+          //     reconnect to log in with the new creds. Not a failure: no wait.
+          //
+          // The exhausted refs are dead, so the stored QR goes with them: a
+          // code that cannot be scanned must never sit on screen looking live.
+          // The replacement is seconds away and the UI says so meanwhile.
           clearQrCode(db);
-          settleReject(
-            new Error(
-              'Connection closed before login (QR expired or network error) — will retry with a fresh QR'
-            )
-          );
+          const restartRequired =
+            lastDisconnect?.error?.output?.statusCode === DisconnectReason.restartRequired;
+          settleReject(preLoginCloseError(qrEmitted, restartRequired));
           return;
         }
 
@@ -174,6 +217,7 @@ async function sendMediaMessage(sock, phone, attachment, caption) {
 
 module.exports = {
   connect,
+  preLoginCloseError,
   registerReplyListener,
   registerAckListener,
   replyBody,
