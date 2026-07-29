@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 
 from app.config import DB_PATH as APP_DB_PATH
 from app.config import MEDIA_DIR, PROJECT_ROOT
@@ -48,6 +49,7 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "worker_heartbeat": {
         "halted_at": "TEXT",
         "halt_reason": "TEXT",
+        "disconnect_requested_at": "TEXT",
     },
     "settings": {
         "send_window_start": "TEXT",
@@ -556,8 +558,23 @@ def clear_qr_code(conn: sqlite3.Connection) -> None:
 
 
 def request_disconnect(conn: sqlite3.Connection) -> None:
+    """Ask the worker to unlink WhatsApp, stamped with the moment of the request.
+
+    The stamp is what keeps this from going off late. Without it the flag is a
+    durable boolean that survives web restarts, worker restarts and arbitrary
+    backoffs, and then wipes a session in a context the operator has long
+    forgotten about. The worker discards anything older than its TTL.
+
+    Written as '...Z' (not the '+00:00' isoformat default) because the worker
+    parses this with JavaScript's Date.
+    """
+    requested_at = (
+        datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )
     with conn:
         conn.execute(
             "UPDATE worker_heartbeat "
-            "SET disconnect_requested = 1, connected = 0, qr_code = NULL WHERE id = 1"
+            "SET disconnect_requested = 1, disconnect_requested_at = ?, "
+            "connected = 0, qr_code = NULL WHERE id = 1",
+            (requested_at,),
         )

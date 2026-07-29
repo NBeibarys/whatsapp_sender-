@@ -616,6 +616,60 @@ input[type="checkbox"].cb:focus-visible { outline: none; box-shadow: 0 0 0 3px v
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------- Confirm dialog (destructive actions) ----------
+   Sits above the busy overlay: the operator answers this, and only then does
+   the work (and its overlay) begin. */
+
+.confirm-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(6, 8, 12, .72);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: confirm-fade .16s var(--ease);
+}
+@keyframes confirm-fade { from { opacity: 0; } }
+
+.confirm-card {
+  width: 100%;
+  /* Wide enough that the two actions sit side by side; they only stack on a
+     genuinely narrow viewport, never because the labels are one word too long. */
+  max-width: 540px;
+  background: linear-gradient(180deg, var(--card), var(--bg-2));
+  /* Bordered in --bad, not the emerald accent: this frame only ever wraps a
+     question whose answer can destroy something. */
+  border: 1px solid rgba(242, 85, 90, .42);
+  border-radius: var(--r);
+  padding: 22px 24px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+  animation: confirm-rise .18s var(--ease);
+}
+@keyframes confirm-rise { from { opacity: 0; transform: translateY(8px) scale(.985); } }
+
+.confirm-title { margin: 0 0 8px; font-size: 1.05rem; font-weight: 650; color: var(--fg); }
+.confirm-body { margin: 0 0 20px; color: var(--fg-dim); font-size: .93rem; }
+
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* Filled destructive action — carries the weight of .btn-primary, in --bad.
+   (.btn-danger stays the quieter outline variant for in-table deletes.) */
+.btn-destructive {
+  background: var(--bad);
+  border-color: transparent;
+  color: #2a0508;
+  box-shadow: 0 6px 20px rgba(242, 85, 90, .22);
+}
+.btn-destructive:hover { border-color: transparent; filter: brightness(1.07); }
+.btn-destructive:focus-visible {
+  outline: none;
+  border-color: transparent;
+  box-shadow: 0 0 0 3px rgba(242, 85, 90, .32);
+}
+
 /* ---------- Locked / disabled sections ---------- */
 
 .locked {

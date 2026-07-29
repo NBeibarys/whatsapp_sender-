@@ -30,17 +30,39 @@ function markDisconnected(db) {
   db.prepare('UPDATE worker_heartbeat SET connected = 0 WHERE id = 1').run();
 }
 
-function requestDisconnect(db) {
-  db.prepare('UPDATE worker_heartbeat SET disconnect_requested = 1 WHERE id = 1').run();
+/**
+ * Record an operator disconnect request, stamped with the time it was made.
+ *
+ * The stamp is not bookkeeping — it is the expiry. A request with no stamp (or
+ * an old one) is a request that outlived the click behind it, and acting on it
+ * destroys a session nobody is currently asking to destroy.
+ */
+function requestDisconnect(db, requestedAt = new Date().toISOString()) {
+  db.prepare(
+    'UPDATE worker_heartbeat SET disconnect_requested = 1, disconnect_requested_at = ? WHERE id = 1'
+  ).run(requestedAt);
+}
+
+function getDisconnectRequest(db) {
+  const row = db
+    .prepare(
+      'SELECT disconnect_requested, disconnect_requested_at FROM worker_heartbeat WHERE id = 1'
+    )
+    .get();
+  return {
+    requested: Boolean(row && row.disconnect_requested),
+    requestedAt: row ? row.disconnect_requested_at : null,
+  };
 }
 
 function isDisconnectRequested(db) {
-  const row = db.prepare('SELECT disconnect_requested FROM worker_heartbeat WHERE id = 1').get();
-  return Boolean(row && row.disconnect_requested);
+  return getDisconnectRequest(db).requested;
 }
 
 function clearDisconnectRequest(db) {
-  db.prepare('UPDATE worker_heartbeat SET disconnect_requested = 0 WHERE id = 1').run();
+  db.prepare(
+    'UPDATE worker_heartbeat SET disconnect_requested = 0, disconnect_requested_at = NULL WHERE id = 1'
+  ).run();
 }
 
 module.exports = {
@@ -52,6 +74,7 @@ module.exports = {
   markConnected,
   markDisconnected,
   requestDisconnect,
+  getDisconnectRequest,
   isDisconnectRequested,
   clearDisconnectRequest,
 };

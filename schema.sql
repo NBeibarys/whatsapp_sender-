@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS worker_heartbeat (
   last_seen TEXT,
   qr_code TEXT,
   disconnect_requested INTEGER NOT NULL DEFAULT 0,
+  -- When the operator asked (UTC ISO-8601). The worker refuses any request
+  -- older than its TTL: an unstamped or long-stale flag is one that outlived
+  -- the click that made it (web restart, worker restart, long backoff), and
+  -- destroying a live session in a context the operator has forgotten about
+  -- is exactly the accident this column exists to prevent.
+  disconnect_requested_at TEXT,
   connected INTEGER NOT NULL DEFAULT 0,
   -- Set when the worker stops sending itself after repeated WhatsApp
   -- rejections. Cleared from the app (POST /api/sending/resume).

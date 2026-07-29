@@ -1126,8 +1126,82 @@
     var waitingForQR = false;
     var lastQR = null;
 
+    // ---------- Disconnect confirmation ----------
+    // Disconnect is not undoable: it logs out of WhatsApp and deletes the
+    // stored session on disk. It gets an explicit, plainly-worded confirm step,
+    // and every ambiguous way out of that step (Escape, click-outside, Enter on
+    // the focused button) resolves to "keep the session".
+    var confirmScrim = $("#disconnect-confirm");
+    var confirmBtn = $("#disconnect-confirm-btn");
+    var cancelBtn = $("#disconnect-cancel-btn");
+    var focusBeforeConfirm = null;
+
+    function confirmOpen() {
+      return Boolean(confirmScrim) && !confirmScrim.classList.contains("hidden");
+    }
+
+    function closeDisconnectConfirm() {
+      if (!confirmOpen()) return;
+      confirmScrim.classList.add("hidden");
+      document.removeEventListener("keydown", onConfirmKeydown, true);
+      // Restore focus — but #conn-status is rebuilt on every poll, so the
+      // element we came from may no longer be in the document.
+      if (focusBeforeConfirm && document.contains(focusBeforeConfirm)) focusBeforeConfirm.focus();
+      focusBeforeConfirm = null;
+    }
+
+    function onConfirmKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeDisconnectConfirm();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      // Trap Tab inside the dialog so the answer can't be given by accident to
+      // something on the still-live page behind it.
+      var active = document.activeElement;
+      if (e.shiftKey && active === cancelBtn) {
+        e.preventDefault();
+        confirmBtn.focus();
+      } else if (!e.shiftKey && active === confirmBtn) {
+        e.preventDefault();
+        cancelBtn.focus();
+      }
+    }
+
+    function openDisconnectConfirm() {
+      if (!confirmScrim) return;
+      focusBeforeConfirm = document.activeElement;
+      confirmScrim.classList.remove("hidden");
+      document.addEventListener("keydown", onConfirmKeydown, true);
+      // The safe answer is the default one: Enter keeps WhatsApp connected.
+      cancelBtn.focus();
+    }
+
+    if (confirmScrim) {
+      confirmScrim.addEventListener("mousedown", function (e) {
+        // Click-outside cancels; a click that starts inside the card does not.
+        if (e.target === confirmScrim) closeDisconnectConfirm();
+      });
+      cancelBtn.addEventListener("click", closeDisconnectConfirm);
+      confirmBtn.addEventListener("click", async function () {
+        closeDisconnectConfirm();
+        try {
+          await postJSON("/api/connection/disconnect");
+        } catch (err) {
+          return; // fetchJSON already toasted; nothing was requested.
+        }
+        waitingForQR = true;
+        showOverlay("Preparing fresh QR code…");
+        poll();
+      });
+    }
+
     function renderStatus(status) {
       var box = $("#conn-status");
+      // WhatsApp dropped on its own while the dialog was open — the question
+      // it is asking no longer applies.
+      if (!status.connected) closeDisconnectConfirm();
       var age = status.age_seconds != null ? Math.round(status.age_seconds) : null;
       var html;
       if (age == null && !status.worker_alive) {
@@ -1141,7 +1215,7 @@
         html = '<div class="block block-pass"><div class="row-between">'
           + '<span><span class="badge badge-pass">connected</span>&nbsp; WhatsApp connected &mdash; worker last seen '
           + '<span class="mono">' + age + "s</span> ago.</span>"
-          + '<button type="button" class="btn" id="disconnect-btn">Disconnect WhatsApp</button>'
+          + '<button type="button" class="btn btn-danger" id="disconnect-btn">Disconnect WhatsApp</button>'
           + "</div></div>";
       } else {
         html = '<div class="block block-warn">WhatsApp not connected &mdash; worker last seen '
@@ -1149,12 +1223,8 @@
       }
       box.innerHTML = html;
       var disconnectBtn = $("#disconnect-btn");
-      if (disconnectBtn) disconnectBtn.addEventListener("click", async function () {
-        await postJSON("/api/connection/disconnect");
-        waitingForQR = true;
-        showOverlay("Preparing fresh QR code…");
-        poll();
-      });
+      // Opens the confirm step; the POST only fires from the dialog.
+      if (disconnectBtn) disconnectBtn.addEventListener("click", openDisconnectConfirm);
 
       var workerMessage = $("#worker-message");
       if (status.worker_message) {

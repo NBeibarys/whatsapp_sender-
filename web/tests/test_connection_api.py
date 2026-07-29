@@ -77,6 +77,51 @@ def test_disconnect_sets_flags(client, conn):
     assert row == (1, 0, None)
 
 
+def test_disconnect_stamps_the_time_of_the_request(client, conn):
+    """The stamp is the expiry: the worker refuses a request older than its TTL.
+
+    An unstamped request would be indistinguishable from one that outlived the
+    click behind it, and would be discarded — so a missing stamp here would
+    silently break Disconnect altogether.
+    """
+    before = datetime.now(timezone.utc)
+
+    resp = client.post("/api/connection/disconnect")
+    assert resp.status_code == 200
+
+    stamp = conn.execute(
+        "SELECT disconnect_requested_at FROM worker_heartbeat WHERE id = 1"
+    ).fetchone()[0]
+    assert stamp is not None
+    # Must be a timezone-aware instant the worker can parse, stamped now.
+    requested_at = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    assert requested_at.tzinfo is not None
+    assert before <= requested_at <= datetime.now(timezone.utc)
+
+
+def test_disconnect_stamp_uses_the_shape_the_worker_can_parse(client, conn):
+    """'...Z', because the worker parses this with JavaScript's Date."""
+    client.post("/api/connection/disconnect")
+
+    stamp = conn.execute(
+        "SELECT disconnect_requested_at FROM worker_heartbeat WHERE id = 1"
+    ).fetchone()[0]
+    assert stamp.endswith("Z")
+    assert "+00:00" not in stamp
+
+
+def test_status_payload_is_unaffected_by_the_disconnect_stamp(client, conn):
+    """The stamp is worker-side plumbing; the status contract must not shift."""
+    before = set(client.get("/api/connection/status").json())
+
+    client.post("/api/connection/disconnect")
+
+    body = client.get("/api/connection/status").json()
+    assert set(body) == before
+    assert body["disconnect_requested"] is True
+    assert "disconnect_requested_at" not in body
+
+
 def test_test_message_queues_via_test_program(client, conn):
     resp = client.post(
         "/api/connection/test-message", json={"phone": "+77012345678", "name": "Aliya"}

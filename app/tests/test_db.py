@@ -293,7 +293,9 @@ def test_apply_migrations_upgrades_a_pre_migration_database(legacy_conn):
     assert {"wa_message_id", "delivery_state", "ack_error", "delivered_at", "read_at"} <= _columns(
         legacy_conn, "contacts"
     )
-    assert {"halted_at", "halt_reason"} <= _columns(legacy_conn, "worker_heartbeat")
+    assert {"halted_at", "halt_reason", "disconnect_requested_at"} <= _columns(
+        legacy_conn, "worker_heartbeat"
+    )
     assert legacy_conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'replies'"
     ).fetchone()

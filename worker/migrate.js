@@ -20,6 +20,7 @@ const ADDED_COLUMNS = {
   worker_heartbeat: {
     halted_at: 'TEXT',
     halt_reason: 'TEXT',
+    disconnect_requested_at: 'TEXT',
   },
   settings: {
     send_window_start: 'TEXT',

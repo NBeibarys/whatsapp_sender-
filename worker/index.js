@@ -6,6 +6,7 @@ const { renderTemplate } = require('./template');
 const {
   updateHeartbeat,
   isDisconnectRequested,
+  getDisconnectRequest,
   clearDisconnectRequest,
   markDisconnected,
   clearQrCode,
@@ -49,6 +50,11 @@ const RECONNECT_RETRY_MS = 5000;
 const RECONNECT_MAX_RETRY_MS = 5 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 30000;
 const ERROR_RETRY_MS = 5000;
+// How long an operator's disconnect request stays actionable. Deliberately
+// generous compared with the loop's poll interval (IDLE_POLL_MS = 5s), so a
+// real click is always honoured promptly, while a flag that survived a restart
+// or an unrelated delay expires instead of destroying a session later.
+const DISCONNECT_REQUEST_TTL_MS = 60000;
 
 function reconnectDelayMs(consecutiveFailures) {
   return Math.min(RECONNECT_RETRY_MS * 2 ** (consecutiveFailures - 1), RECONNECT_MAX_RETRY_MS);
@@ -100,6 +106,40 @@ async function sleepUntil(ms, shouldWake, stepMs = 1000) {
 }
 
 /**
+ * Age of a disconnect request in ms, or null when it cannot be trusted.
+ *
+ * An absent or unparseable stamp means the request predates stamping (or was
+ * written by something that did not stamp it), which is precisely the class of
+ * request that must never be acted on.
+ */
+function disconnectRequestAgeMs(requestedAt, now = Date.now()) {
+  if (!requestedAt) return null;
+  const stamped = Date.parse(requestedAt);
+  if (Number.isNaN(stamped)) return null;
+  return now - stamped;
+}
+
+/**
+ * Drop a disconnect request left behind by a previous process.
+ *
+ * Called at startup, before the loop runs. A request is a message to the
+ * worker that was alive when the operator clicked; if that worker is gone, the
+ * request died with it. Inheriting it means a brand-new process wiping a
+ * freshly linked session on behalf of a click from another lifetime.
+ */
+function discardPendingDisconnectRequest(db, options = {}) {
+  const log = options.log || console;
+  if (!isDisconnectRequested(db)) return { discarded: false };
+  clearDisconnectRequest(db);
+  log.log(
+    'Discarded a disconnect request left over from a previous worker — ' +
+      'it was never acted on, and this process will not inherit it. ' +
+      'Press Disconnect again if you still want to unlink WhatsApp.'
+  );
+  return { discarded: true };
+}
+
+/**
  * Act on an operator disconnect request.
  *
  * The request flag is consumed ONLY here, where it is actually acted on.
@@ -110,15 +150,36 @@ async function sleepUntil(ms, shouldWake, stepMs = 1000) {
  * With no socket there is nothing to log out of, but the operator's intent is
  * the same: drop the session and come back with a fresh QR. So we still clear
  * the stored session and exit cleanly for the supervisor to respawn.
+ *
+ * A request only counts while it is FRESH. This destroys a linked session and
+ * deletes auth/, so it must reflect an intent the operator still holds — not a
+ * durable boolean that waited out a restart and fired minutes later against a
+ * session they have since re-established. Stale requests are cleared, loudly,
+ * and the session is left completely untouched.
  */
 async function handleDisconnectRequest(db, sock, options = {}) {
-  if (!isDisconnectRequested(db)) return { acted: false };
+  const request = getDisconnectRequest(db);
+  if (!request.requested) return { acted: false };
 
   const authDir = options.authDir || AUTH_DIR;
   const log = options.log || console;
   const exit = options.exit || ((code) => process.exit(code));
   const removeAuth =
     options.removeAuth || ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+  const ttlMs = options.ttlMs ?? DISCONNECT_REQUEST_TTL_MS;
+  const now = options.now ? options.now() : Date.now();
+
+  const ageMs = disconnectRequestAgeMs(request.requestedAt, now);
+  if (ageMs === null || ageMs > ttlMs) {
+    clearDisconnectRequest(db);
+    const age = ageMs === null ? 'an unknown time' : `${Math.round(ageMs / 1000)}s`;
+    log.log(
+      `Ignoring a disconnect request made ${age} ago (older than ${Math.round(ttlMs / 1000)}s) — ` +
+        'discarded as stale. The WhatsApp session was left untouched; ' +
+        'press Disconnect again if you do want to unlink.'
+    );
+    return { acted: false, discardedStale: true, ageMs };
+  }
 
   clearDisconnectRequest(db);
   markDisconnected(db);
@@ -330,6 +391,10 @@ async function main() {
 
   updateHeartbeat(db);
 
+  // Before the loop can see it: a disconnect request that no worker consumed
+  // belongs to the process that was running when it was made, not to this one.
+  discardPendingDisconnectRequest(db);
+
   // Keep the heartbeat fresh even while the send loop sleeps through long
   // delays (the UI treats heartbeats older than 120s as a dead worker).
   setInterval(() => {
@@ -357,4 +422,7 @@ module.exports = {
   connectRetryPolicy,
   sleepUntil,
   handleDisconnectRequest,
+  discardPendingDisconnectRequest,
+  disconnectRequestAgeMs,
+  DISCONNECT_REQUEST_TTL_MS,
 };

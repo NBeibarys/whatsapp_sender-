@@ -249,7 +249,12 @@ test('the pre-login error carries the flags the retry policy keys on', () => {
   assert.match(preLoginCloseError(true, true).message, /accepted the pairing/);
 });
 
-const { sleepUntil, handleDisconnectRequest } = require('../index');
+const {
+  sleepUntil,
+  handleDisconnectRequest,
+  discardPendingDisconnectRequest,
+  DISCONNECT_REQUEST_TTL_MS,
+} = require('../index');
 const { requestDisconnect, isDisconnectRequested, setQrCode } = require('../heartbeat');
 
 const SILENT_LOG = { log() {}, error() {} };
@@ -327,6 +332,120 @@ test('a failing logout still clears the session and exits', async () => {
   assert.equal(result.acted, true);
   assert.equal(harness.calls.removedAuth.length, 1);
   assert.deepEqual(harness.calls.exit, [0]);
+  cleanup();
+});
+
+// --- Disconnect requests expire (they must not detonate late) ---
+
+/** Backdate an existing request so it looks like it was made ageMs ago. */
+function backdateRequest(db, ageMs) {
+  db.prepare('UPDATE worker_heartbeat SET disconnect_requested_at = ? WHERE id = 1').run(
+    new Date(Date.now() - ageMs).toISOString()
+  );
+}
+
+test('a disconnect request older than the TTL is discarded, not acted on', async () => {
+  const { db, cleanup } = makeTestDb();
+  const harness = disconnectHarness();
+  requestDisconnect(db);
+  backdateRequest(db, DISCONNECT_REQUEST_TTL_MS + 5000);
+  const sock = { logout: async () => { throw new Error('logout must never be called'); } };
+
+  const result = await handleDisconnectRequest(db, sock, harness.options);
+
+  assert.equal(result.acted, false, 'a forgotten request must never destroy a session');
+  assert.equal(result.discardedStale, true);
+  assert.deepEqual(harness.calls.exit, [], 'must not exit');
+  assert.deepEqual(harness.calls.removedAuth, [], 'the stored session must be left untouched');
+  assert.equal(isDisconnectRequested(db), false, 'and it must be cleared, not left to fire later');
+  cleanup();
+});
+
+test('an unstamped (pre-TTL) disconnect request is discarded rather than trusted', async () => {
+  const { db, cleanup } = makeTestDb();
+  const harness = disconnectHarness();
+  // Exactly what a database migrated from the old schema looks like.
+  db.prepare(
+    'UPDATE worker_heartbeat SET disconnect_requested = 1, disconnect_requested_at = NULL WHERE id = 1'
+  ).run();
+
+  const result = await handleDisconnectRequest(db, null, harness.options);
+
+  assert.equal(result.acted, false);
+  assert.equal(result.discardedStale, true);
+  assert.deepEqual(harness.calls.removedAuth, []);
+  assert.equal(isDisconnectRequested(db), false);
+  cleanup();
+});
+
+test('a fresh disconnect request is still honoured promptly', async () => {
+  const { db, cleanup } = makeTestDb();
+  const harness = disconnectHarness();
+  requestDisconnect(db);
+  // A real click reaches the loop within one poll — far inside the TTL.
+  backdateRequest(db, 5000);
+  let loggedOut = false;
+  const sock = { logout: async () => { loggedOut = true; } };
+
+  const result = await handleDisconnectRequest(db, sock, harness.options);
+
+  assert.equal(result.acted, true, 'the legitimate flow must not be broken by the TTL');
+  assert.equal(loggedOut, true);
+  assert.deepEqual(harness.calls.exit, [0]);
+  assert.equal(harness.calls.removedAuth.length, 1);
+  cleanup();
+});
+
+test('a request made right at the TTL boundary is still honoured', async () => {
+  const { db, cleanup } = makeTestDb();
+  const harness = disconnectHarness();
+  requestDisconnect(db, new Date(1000).toISOString());
+
+  // now == requestedAt + TTL exactly: inside the window, not past it.
+  const result = await handleDisconnectRequest(db, null, {
+    ...harness.options,
+    now: () => 1000 + DISCONNECT_REQUEST_TTL_MS,
+  });
+
+  assert.equal(result.acted, true);
+  cleanup();
+});
+
+test('worker startup discards a disconnect request left by a previous process', () => {
+  const { db, cleanup } = makeTestDb();
+  requestDisconnect(db);
+
+  const result = discardPendingDisconnectRequest(db, { log: SILENT_LOG });
+
+  assert.equal(result.discarded, true);
+  assert.equal(
+    isDisconnectRequested(db),
+    false,
+    'a new process must not inherit a click aimed at the worker that is gone'
+  );
+  cleanup();
+});
+
+test('worker startup leaves a clean heartbeat alone', () => {
+  const { db, cleanup } = makeTestDb();
+
+  const result = discardPendingDisconnectRequest(db, { log: SILENT_LOG });
+
+  assert.equal(result.discarded, false);
+  assert.equal(isDisconnectRequested(db), false);
+  cleanup();
+});
+
+test('clearing a disconnect request also clears its timestamp', () => {
+  const { db, cleanup } = makeTestDb();
+  requestDisconnect(db);
+
+  discardPendingDisconnectRequest(db, { log: SILENT_LOG });
+
+  const row = db
+    .prepare('SELECT disconnect_requested_at FROM worker_heartbeat WHERE id = 1')
+    .get();
+  assert.equal(row.disconnect_requested_at, null, 'a leftover stamp would misreport the next age');
   cleanup();
 });
 

@@ -74,7 +74,7 @@ test('migrating a pre-migration database adds every new column and table', () =>
     assert.ok(contactColumns.includes(c), `contacts.${c} missing`);
   });
   const heartbeatColumns = columns(db, 'worker_heartbeat');
-  ['halted_at', 'halt_reason'].forEach((c) => {
+  ['halted_at', 'halt_reason', 'disconnect_requested_at'].forEach((c) => {
     assert.ok(heartbeatColumns.includes(c), `worker_heartbeat.${c} missing`);
   });
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'replies'").get());
